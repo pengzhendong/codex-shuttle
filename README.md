@@ -46,18 +46,19 @@ The selected Shuttle release must match the public source baseline of your local
 
 ### 1. Install `cxs`
 
-Open [Releases](https://github.com/pengzhendong/codex-shuttle/releases), select the release matching your Codex version, and download the Mac binary for your architecture:
+The installer detects your Mac architecture and local Codex version, verifies the release checksum, and installs `cxs` to `~/.local/bin`:
 
 ```bash
-uname -m
-# arm64   -> cxs-aarch64-apple-darwin
-# x86_64  -> cxs-x86_64-apple-darwin
-
-chmod +x cxs-*-apple-darwin
-sudo install -m 0755 cxs-*-apple-darwin /usr/local/bin/cxs
+curl -fsSL https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
 ```
 
-Verify the downloaded file against the `SHA256SUMS` in the same release before installing it.
+Or with `wget`:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
+```
+
+To select a Codex baseline explicitly, use `sh -s -- --version 0.147.0`. You can also download and verify a binary manually from [Releases](https://github.com/pengzhendong/codex-shuttle/releases).
 
 ### 2. Prepare SSH
 

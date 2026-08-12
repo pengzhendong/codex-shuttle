@@ -46,18 +46,19 @@ Shuttle Release 必须匹配本机 Codex 的公开源码基线。例如桌面版
 
 ### 1. 安装 `cxs`
 
-打开 [Releases](https://github.com/pengzhendong/codex-shuttle/releases)，选择与本机 Codex 版本匹配的 Release，再按 Mac 架构下载：
+安装器会自动识别 Mac 架构和本机 Codex 版本、校验 Release 文件，并把 `cxs` 安装到 `~/.local/bin`：
 
 ```bash
-uname -m
-# arm64   -> cxs-aarch64-apple-darwin
-# x86_64  -> cxs-x86_64-apple-darwin
-
-chmod +x cxs-*-apple-darwin
-sudo install -m 0755 cxs-*-apple-darwin /usr/local/bin/cxs
+curl -fsSL https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
 ```
 
-安装前请使用同一 Release 中的 `SHA256SUMS` 校验文件。
+也可以使用 `wget`：
+
+```bash
+wget -qO- https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
+```
+
+如需明确指定 Codex 基线，可使用 `sh -s -- --version 0.147.0`。也可以前往 [Releases](https://github.com/pengzhendong/codex-shuttle/releases) 手动下载并校验文件。
 
 ### 2. 准备 SSH
 
