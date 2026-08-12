@@ -5,6 +5,7 @@ permissions:
 
 on:
   push:
+    branches: [master]
   pull_request:
 
 jobs:
@@ -18,6 +19,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: workspace-${{ runner.os }}-${{ runner.arch }}
+          add-job-id-key: false
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
