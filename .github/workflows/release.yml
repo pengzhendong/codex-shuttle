@@ -105,7 +105,8 @@ jobs:
             git fetch --no-tags origin "refs/tags/${candidate}:refs/tags/${candidate}"
             if ! git diff --quiet "$candidate" "$GITHUB_SHA" -- \
               runtime/cxs-runtime \
-              scripts/build-cxs-runtime.sh; then
+              scripts/build-cxs-runtime.sh \
+              .github/workflows/runtime.yml; then
               echo "Runtime inputs differ from $candidate; skipping it."
               continue
             fi
