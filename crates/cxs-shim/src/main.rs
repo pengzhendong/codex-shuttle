@@ -360,7 +360,7 @@ async fn prepare_agent_socket(path: &Path, replace: bool) -> Result<()> {
                     path.display()
                 );
             }
-            replace_agent(&path.with_extension("pid")).await?;
+            replace_agent(path, &path.with_extension("pid")).await?;
         }
         if path.exists() {
             fs::remove_file(path)?;
@@ -377,7 +377,19 @@ fn write_agent_pid(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn replace_agent(pid_path: &Path) -> Result<()> {
+async fn replace_agent(socket_path: &Path, pid_path: &Path) -> Result<()> {
+    let pid = active_agent_pid(socket_path, pid_path)?;
+    validate_agent_process(pid)?;
+    stop_agent_process(pid).await
+}
+
+#[cfg(target_os = "linux")]
+fn active_agent_pid(socket_path: &Path, _pid_path: &Path) -> Result<Pid> {
+    find_socket_owner(socket_path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn active_agent_pid(_socket_path: &Path, pid_path: &Path) -> Result<Pid> {
     let value = fs::read_to_string(pid_path).with_context(|| {
         format!(
             "could not read active agent PID from {}",
@@ -391,9 +403,50 @@ async fn replace_agent(pid_path: &Path) -> Result<()> {
     if raw_pid <= 1 {
         bail!("refusing to replace invalid cxs-agent PID {raw_pid}");
     }
-    let pid = Pid::from_raw(raw_pid);
-    validate_agent_process(pid)?;
-    stop_agent_process(pid).await
+    Ok(Pid::from_raw(raw_pid))
+}
+
+#[cfg(target_os = "linux")]
+fn find_socket_owner(path: &Path) -> Result<Pid> {
+    let sockets = fs::read_to_string("/proc/net/unix")
+        .context("could not inspect Linux Unix sockets")?;
+    let socket_path = path.to_string_lossy();
+    let inode = find_unix_socket_inode(&sockets, &socket_path)
+        .with_context(|| format!("could not find active agent socket {}", path.display()))?;
+    let expected = format!("socket:[{inode}]");
+    for process in fs::read_dir("/proc").context("could not inspect Linux processes")? {
+        let Ok(process) = process else { continue };
+        let Some(raw_pid) = process.file_name().to_str().and_then(|name| name.parse().ok()) else {
+            continue;
+        };
+        if raw_pid <= 1 {
+            continue;
+        }
+        let Ok(descriptors) = fs::read_dir(process.path().join("fd")) else {
+            continue;
+        };
+        for descriptor in descriptors {
+            let Ok(descriptor) = descriptor else { continue };
+            if fs::read_link(descriptor.path())
+                .is_ok_and(|target| target.as_os_str() == expected.as_str())
+            {
+                return Ok(Pid::from_raw(raw_pid));
+            }
+        }
+    }
+    bail!(
+        "could not identify the cxs-agent listening on {}",
+        path.display()
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn find_unix_socket_inode<'a>(table: &'a str, path: &str) -> Option<&'a str> {
+    table.lines().skip(1).find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let inode = fields.nth(6)?;
+        (fields.next()? == path).then_some(inode)
+    })
 }
 
 async fn stop_agent_process(pid: Pid) -> Result<()> {
@@ -729,6 +782,17 @@ mod tests {
         assert!(!is_agent_command_line(
             b"/root/.local/bin/cxs-runtime\0exec-server\0"
         ));
+    }
+
+    #[test]
+    fn finds_socket_inode_by_exact_path() {
+        let table = concat!(
+            "Num RefCount Protocol Flags Type St Inode Path\n",
+            "0000: 00000002 00000000 00010000 0001 01 11111 /tmp/other.sock\n",
+            "0000: 00000002 00000000 00010000 0001 01 22222 /tmp/cxs.sock\n",
+        );
+        assert_eq!(find_unix_socket_inode(table, "/tmp/cxs.sock"), Some("22222"));
+        assert_eq!(find_unix_socket_inode(table, "/tmp/missing.sock"), None);
     }
 
     #[tokio::test]
