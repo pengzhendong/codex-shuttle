@@ -791,7 +791,10 @@ mod tests {
             "0000: 00000002 00000000 00010000 0001 01 11111 /tmp/other.sock\n",
             "0000: 00000002 00000000 00010000 0001 01 22222 /tmp/cxs.sock\n",
         );
-        assert_eq!(find_unix_socket_inode(table, "/tmp/cxs.sock"), Some("22222"));
+        assert_eq!(
+            find_unix_socket_inode(table, "/tmp/cxs.sock"),
+            Some("22222")
+        );
         assert_eq!(find_unix_socket_inode(table, "/tmp/missing.sock"), None);
     }
 
