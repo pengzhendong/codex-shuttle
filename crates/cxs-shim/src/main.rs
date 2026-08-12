@@ -408,8 +408,8 @@ fn active_agent_pid(_socket_path: &Path, pid_path: &Path) -> Result<Pid> {
 
 #[cfg(target_os = "linux")]
 fn find_socket_owner(path: &Path) -> Result<Pid> {
-    let sockets = fs::read_to_string("/proc/net/unix")
-        .context("could not inspect Linux Unix sockets")?;
+    let sockets =
+        fs::read_to_string("/proc/net/unix").context("could not inspect Linux Unix sockets")?;
     let socket_path = path.to_string_lossy();
     let inode = find_unix_socket_inode(&sockets, &socket_path)
         .with_context(|| format!("could not find active agent socket {}", path.display()))?;
