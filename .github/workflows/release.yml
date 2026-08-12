@@ -26,6 +26,7 @@ jobs:
     outputs:
       codex-version: ${{ steps.version.outputs.codex-version }}
       release-tag: ${{ steps.version.outputs.release-tag }}
+      runtime-release-tag: ${{ steps.runtime.outputs.release-tag }}
       should-publish: ${{ steps.version.outputs.should-publish }}
     steps:
       - uses: actions/checkout@v7
@@ -83,6 +84,67 @@ jobs:
           echo "codex-version=$codex_version" >> "$GITHUB_OUTPUT"
           echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "should-publish=$should_publish" >> "$GITHUB_OUTPUT"
+      - id: runtime
+        if: steps.version.outputs.should-publish == 'true'
+        env:
+          CODEX_VERSION: ${{ steps.version.outputs.codex-version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          runtime_release_tag=
+          suffix="-codex.${CODEX_VERSION}"
+          while read -r candidate; do
+            test -n "$candidate" || continue
+            test "$candidate" != "$RELEASE_TAG" || continue
+            case "$candidate" in
+              *"$suffix") ;;
+              *) continue ;;
+            esac
+
+            git fetch --no-tags origin "refs/tags/${candidate}:refs/tags/${candidate}"
+            if ! git diff --quiet "$candidate" "$GITHUB_SHA" -- \
+              runtime/cxs-runtime \
+              scripts/build-cxs-runtime.sh \
+              .github/workflows/runtime.yml; then
+              echo "Runtime inputs differ from $candidate; skipping it."
+              continue
+            fi
+
+            candidate_dir=$(mktemp -d)
+            valid=true
+            if ! gh release download "$candidate" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'cxs-runtime-codex-*.tar.gz' \
+              --pattern SHA256SUMS \
+              --dir "$candidate_dir"; then
+              valid=false
+            fi
+            if test "$valid" = true; then
+              for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+                name="cxs-runtime-codex-${CODEX_VERSION}-${target}.tar.gz"
+                awk -v name="$name" '$2 == name' "$candidate_dir/SHA256SUMS" > "$candidate_dir/runtime.sha256"
+                if ! test -s "$candidate_dir/runtime.sha256" ||
+                  ! (cd "$candidate_dir" && sha256sum --check runtime.sha256); then
+                  valid=false
+                  break
+                fi
+              done
+            fi
+            rm -rf "$candidate_dir"
+
+            if test "$valid" = true; then
+              runtime_release_tag=$candidate
+              echo "Reusing verified runtime assets from $candidate."
+              break
+            fi
+            echo "$candidate has no complete, valid runtime; trying the next Release."
+          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[].tag_name')
+
+          if test -z "$runtime_release_tag"; then
+            echo "No compatible verified runtime Release was found; the runtime will be built."
+          fi
+          echo "release-tag=$runtime_release_tag" >> "$GITHUB_OUTPUT"
 
   quality:
     needs: prepare
@@ -149,6 +211,7 @@ jobs:
     uses: ./.github/workflows/runtime.yml
     with:
       codex_version: ${{ needs.prepare.outputs.codex-version }}
+      reuse_release_tag: ${{ needs.prepare.outputs.runtime-release-tag }}
 
   publish:
     needs: [prepare, quality, mac-cli, linux-shim, linux-runtime]

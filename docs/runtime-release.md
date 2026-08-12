@@ -17,7 +17,12 @@
    build outputs are cached per architecture and restored across nearby Codex
    versions; ThinLTO is disabled because this RPC host is latency-insensitive
    compared with the cost of whole-program release linking.
-5. Only after both Mac CLIs, Linux shims, runtimes, and all tests pass does it
+5. When publishing another Shuttle version for the same Codex version, the
+   workflow compares the runtime source, build script, and runtime workflow
+   with the previous Release. If none changed, it downloads both previous
+   runtime packages, verifies them against that Release's `SHA256SUMS`, and
+   attaches them to the new Release instead of compiling them again.
+6. Only after both Mac CLIs, Linux shims, runtimes, and all tests pass does it
    publish an immutable Release with `SHA256SUMS`.
 
 A failed build creates no Release and is retried by the next scheduled run.

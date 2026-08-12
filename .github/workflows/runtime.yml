@@ -6,18 +6,59 @@ on:
       codex_version:
         required: true
         type: string
+      reuse_release_tag:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       codex_version:
         description: "OpenAI Codex version, for example 0.147.0"
         required: true
         type: string
+      reuse_release_tag:
+        description: "Existing Shuttle release whose matching runtime assets should be reused"
+        required: false
+        type: string
 
 permissions:
   contents: read
 
+env:
+  REUSE_RELEASE_TAG: ${{ inputs.reuse_release_tag || github.event.inputs.reuse_release_tag || '' }}
+
 jobs:
+  reuse:
+    if: (inputs.reuse_release_tag || github.event.inputs.reuse_release_tag || '') != ''
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download previous runtime package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ env.REUSE_RELEASE_TAG }}
+          RUNTIME_NAME: cxs-runtime-codex-${{ inputs.codex_version }}-${{ matrix.target }}.tar.gz
+        run: |
+          mkdir runtime-artifacts
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$RUNTIME_NAME" \
+            --pattern SHA256SUMS \
+            --dir runtime-artifacts
+          awk -v name="$RUNTIME_NAME" '$2 == name' runtime-artifacts/SHA256SUMS > runtime-artifacts/runtime.sha256
+          test -s runtime-artifacts/runtime.sha256
+          (cd runtime-artifacts && sha256sum --check runtime.sha256)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cxs-runtime-codex-${{ inputs.codex_version }}-${{ matrix.target }}
+          path: runtime-artifacts/*.tar.gz
+
   runtime:
+    if: (inputs.reuse_release_tag || github.event.inputs.reuse_release_tag || '') == ''
     strategy:
       fail-fast: false
       matrix:
