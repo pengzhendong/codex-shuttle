@@ -4,7 +4,7 @@
 
 ## Automatic Codex releases
 
-1. Every 15 minutes, GitHub Actions discovers stable OpenAI `rust-vX.Y.Z`
+1. Every hour, GitHub Actions discovers stable OpenAI `rust-vX.Y.Z`
    tags at or above the baseline in `runtime/codex-versions.txt`.
 2. If `v<shuttle-version>-codex.<codex-version>` does not exist, the workflow
    selects the oldest unpublished version, runs the workspace tests, and starts
@@ -13,7 +13,10 @@
 3. `scripts/build-cxs-runtime.sh` downloads OpenAI's exact `rust-v<version>`
    source and injects `runtime/cxs-runtime` as an additional workspace member.
 4. GitHub Actions cross-compiles static `x86_64-unknown-linux-musl` and
-   `aarch64-unknown-linux-musl` binaries and smoke-tests both packages.
+   `aarch64-unknown-linux-musl` binaries and smoke-tests both packages. Runtime
+   build outputs are cached per architecture and restored across nearby Codex
+   versions; ThinLTO is disabled because this RPC host is latency-insensitive
+   compared with the cost of whole-program release linking.
 5. Only after both Mac CLIs, Linux shims, runtimes, and all tests pass does it
    publish an immutable Release with `SHA256SUMS`.
 

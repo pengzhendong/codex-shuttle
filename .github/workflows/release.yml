@@ -2,7 +2,7 @@ name: Release
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       codex_version:
@@ -160,6 +160,16 @@ jobs:
       - uses: goto-bus-stop/setup-zig@v2
       - uses: docker/setup-qemu-action@v3
       - run: cargo install cargo-zigbuild --locked
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/cxs-runtime-target-${{ matrix.target }}
+          key: cxs-runtime-${{ runner.os }}-${{ matrix.target }}-${{ needs.prepare.outputs.codex-version }}-${{ hashFiles('runtime/cxs-runtime/**', 'scripts/build-cxs-runtime.sh') }}
+          restore-keys: |
+            cxs-runtime-${{ runner.os }}-${{ matrix.target }}-${{ needs.prepare.outputs.codex-version }}-
+            cxs-runtime-${{ runner.os }}-${{ matrix.target }}-
       - run: CXS_RUNTIME_CARGO=cargo-zigbuild scripts/build-cxs-runtime.sh "${{ needs.prepare.outputs.codex-version }}" "${{ matrix.target }}" runtime-artifacts
       - name: Smoke-test runtime package
         run: |
