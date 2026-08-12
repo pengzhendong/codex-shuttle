@@ -416,7 +416,11 @@ fn find_socket_owner(path: &Path) -> Result<Pid> {
     let expected = format!("socket:[{inode}]");
     for process in fs::read_dir("/proc").context("could not inspect Linux processes")? {
         let Ok(process) = process else { continue };
-        let Some(raw_pid) = process.file_name().to_str().and_then(|name| name.parse().ok()) else {
+        let Some(raw_pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        else {
             continue;
         };
         if raw_pid <= 1 {
