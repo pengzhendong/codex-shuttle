@@ -27,8 +27,7 @@ impl SshSnapshot {
         // Resolve a name that should match only generic Host blocks. The
         // generated alias inherits those same blocks, so only source-specific
         // differences need to be repeated in the managed file.
-        let baseline_host = format!("cxs-inherited-probe-{}.invalid", std::process::id());
-        let inherited_values = resolve_ssh_values(&baseline_host)?;
+        let inherited_values = resolve_ssh_values("cxs-inherited-probe.invalid")?;
         for required in ["hostname", "user", "port"] {
             if first_value(&values, required).is_none() {
                 bail!("ssh -G output did not include '{required}'");
@@ -268,7 +267,9 @@ fn append_source_values(output: &mut String, snapshot: &SshSnapshot, key: &str) 
     let Some(values) = snapshot.values.get(key) else {
         return Ok(());
     };
-    if snapshot.inherited_values.get(key) == Some(values) {
+    if snapshot.inherited_values.get(key) == Some(values)
+        || dynamic_inherited_value(key, &snapshot.inherited_values)
+    {
         return Ok(());
     }
     let source_values: Vec<&String> = if key == "identityfile" {
@@ -299,6 +300,14 @@ fn append_source_values(output: &mut String, snapshot: &SshSnapshot, key: &str) 
         output.push('\n');
     }
     Ok(())
+}
+
+fn dynamic_inherited_value(key: &str, inherited_values: &BTreeMap<String, Vec<String>>) -> bool {
+    // Tokens such as %C and %h expand differently for the source alias and the
+    // generated alias. If a generic Host block produced the directive, let
+    // OpenSSH expand it again for cxs-<profile> instead of freezing the source
+    // host's expansion into the managed file.
+    matches!(key, "controlpath") && inherited_values.contains_key(key)
 }
 
 fn directive_name(key: &str) -> &'static str {
@@ -491,6 +500,28 @@ mod tests {
         assert!(rendered.contains("IdentityFile ~/.ssh/work_key"));
         assert!(!rendered.contains("IdentityFile ~/.ssh/id_rsa"));
         assert!(!rendered.contains("IdentityFile ~/.ssh/id_ed25519"));
+        Ok(())
+    }
+
+    #[test]
+    fn lets_the_generated_alias_expand_inherited_control_path() -> Result<()> {
+        let inherited = parse_ssh_g("controlpath /tmp/probe-hash\n")?;
+        let mut values = inherited.clone();
+        values.insert(
+            "controlpath".to_owned(),
+            vec!["/tmp/source-hash".to_owned()],
+        );
+        values.insert("hostname".to_owned(), vec!["example.com".to_owned()]);
+        values.insert("user".to_owned(), vec!["dev".to_owned()]);
+        values.insert("port".to_owned(), vec!["22".to_owned()]);
+        let snapshot = SshSnapshot {
+            source_host: "gpu-server".to_owned(),
+            values,
+            inherited_values: inherited,
+        };
+
+        let rendered = render_host(&profile(), &snapshot)?;
+        assert!(!rendered.contains("ControlPath"));
         Ok(())
     }
 }
