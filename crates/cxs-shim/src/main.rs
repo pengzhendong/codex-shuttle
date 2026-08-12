@@ -393,6 +393,10 @@ async fn replace_agent(pid_path: &Path) -> Result<()> {
     }
     let pid = Pid::from_raw(raw_pid);
     validate_agent_process(pid)?;
+    stop_agent_process(pid).await
+}
+
+async fn stop_agent_process(pid: Pid) -> Result<()> {
     let _ = kill(pid, Signal::SIGTERM);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while process_exists(pid) && tokio::time::Instant::now() < deadline {
@@ -407,7 +411,7 @@ async fn replace_agent(pid_path: &Path) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     if process_exists(pid) {
-        bail!("could not stop existing cxs-agent PID {raw_pid}");
+        bail!("could not stop existing cxs-agent PID {}", pid.as_raw());
     }
     Ok(())
 }
@@ -434,16 +438,20 @@ fn process_exists(pid: Pid) -> bool {
 fn validate_agent_process(pid: Pid) -> Result<()> {
     let command_line = fs::read(format!("/proc/{}/cmdline", pid.as_raw()))
         .context("could not inspect the active cxs-agent process")?;
-    if !command_line
-        .split(|byte| *byte == 0)
-        .any(|argument| argument == b"__cxs-agent")
-    {
+    if !is_agent_command_line(&command_line) {
         bail!(
             "refusing to replace PID {} because it is not cxs-agent",
             pid.as_raw()
         );
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn is_agent_command_line(command_line: &[u8]) -> bool {
+    command_line
+        .split(|byte| *byte == 0)
+        .any(|argument| argument == b"__cxs-agent")
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -672,7 +680,7 @@ async fn delegate_or_reject(config: &ShimConfig, arguments: &[String]) -> Result
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::os::unix::process::ExitStatusExt;
 
     use cxs_core::{AppPaths, ProfileStatus, ProfileStore};
     use futures_util::{SinkExt, StreamExt};
@@ -698,24 +706,29 @@ mod tests {
 
     #[tokio::test]
     async fn replacement_stops_the_previous_agent() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let socket = directory.path().join("agent.sock");
-        let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
         let mut previous = std::process::Command::new("/bin/sleep");
-        previous.arg0("__cxs-agent").arg("60");
+        previous.arg("60");
         let mut previous = previous.spawn()?;
-        fs::write(socket.with_extension("pid"), previous.id().to_string())?;
+        let pid = Pid::from_raw(i32::try_from(previous.id())?);
         let reaper = std::thread::spawn(move || previous.wait());
 
-        prepare_agent_socket(&socket, true).await?;
+        stop_agent_process(pid).await?;
 
         let status = reaper
             .join()
             .map_err(|_| anyhow::anyhow!("agent reaper thread panicked"))??;
         assert_eq!(status.signal(), Some(Signal::SIGTERM as i32));
-        assert!(!socket.exists());
-        assert!(!socket.with_extension("pid").exists());
         Ok(())
+    }
+
+    #[test]
+    fn recognizes_only_agent_command_lines() {
+        assert!(is_agent_command_line(
+            b"/root/.local/bin/cxs-shim\0__cxs-agent\0--replace\0"
+        ));
+        assert!(!is_agent_command_line(
+            b"/root/.local/bin/cxs-runtime\0exec-server\0"
+        ));
     }
 
     #[tokio::test]
