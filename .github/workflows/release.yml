@@ -92,45 +92,58 @@ jobs:
           RELEASE_TAG: ${{ steps.version.outputs.release-tag }}
         run: |
           set -euo pipefail
-          previous_tag=$(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[].tag_name' |
-            awk -v suffix="-codex.${CODEX_VERSION}" -v current="$RELEASE_TAG" '
-              !found && $0 != current && substr($0, length($0) - length(suffix) + 1) == suffix {
-                print
-                found = 1
-              }
-            '
-          )
-          if test -z "$previous_tag"; then
-            echo "No earlier Release for Codex $CODEX_VERSION; the runtime will be built."
-            echo "release-tag=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          runtime_release_tag=
+          suffix="-codex.${CODEX_VERSION}"
+          while read -r candidate; do
+            test -n "$candidate" || continue
+            test "$candidate" != "$RELEASE_TAG" || continue
+            case "$candidate" in
+              *"$suffix") ;;
+              *) continue ;;
+            esac
 
-          runtime_assets=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${previous_tag}" --jq '.assets[].name')
-          complete=true
-          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-            grep -Fqx "cxs-runtime-codex-${CODEX_VERSION}-${target}.tar.gz" <<<"$runtime_assets" || complete=false
-          done
-          grep -Fqx SHA256SUMS <<<"$runtime_assets" || complete=false
-          if test "$complete" != true; then
-            echo "$previous_tag does not contain a complete verified runtime; rebuilding."
-            echo "release-tag=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            git fetch --no-tags origin "refs/tags/${candidate}:refs/tags/${candidate}"
+            if ! git diff --quiet "$candidate" "$GITHUB_SHA" -- \
+              runtime/cxs-runtime \
+              scripts/build-cxs-runtime.sh; then
+              echo "Runtime inputs differ from $candidate; skipping it."
+              continue
+            fi
 
-          git fetch --no-tags origin "refs/tags/${previous_tag}:refs/tags/${previous_tag}"
-          if git diff --quiet "$previous_tag" "$GITHUB_SHA" -- \
-            runtime/cxs-runtime \
-            scripts/build-cxs-runtime.sh \
-            .github/workflows/runtime.yml; then
-            echo "Reusing verified runtime assets from $previous_tag."
-            echo "release-tag=$previous_tag" >> "$GITHUB_OUTPUT"
-          else
-            echo "Runtime inputs changed since $previous_tag; the runtime will be rebuilt."
-            echo "release-tag=" >> "$GITHUB_OUTPUT"
+            candidate_dir=$(mktemp -d)
+            valid=true
+            if ! gh release download "$candidate" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'cxs-runtime-codex-*.tar.gz' \
+              --pattern SHA256SUMS \
+              --dir "$candidate_dir"; then
+              valid=false
+            fi
+            if test "$valid" = true; then
+              for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+                name="cxs-runtime-codex-${CODEX_VERSION}-${target}.tar.gz"
+                awk -v name="$name" '$2 == name' "$candidate_dir/SHA256SUMS" > "$candidate_dir/runtime.sha256"
+                if ! test -s "$candidate_dir/runtime.sha256" ||
+                  ! (cd "$candidate_dir" && sha256sum --check runtime.sha256); then
+                  valid=false
+                  break
+                fi
+              done
+            fi
+            rm -rf "$candidate_dir"
+
+            if test "$valid" = true; then
+              runtime_release_tag=$candidate
+              echo "Reusing verified runtime assets from $candidate."
+              break
+            fi
+            echo "$candidate has no complete, valid runtime; trying the next Release."
+          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[].tag_name')
+
+          if test -z "$runtime_release_tag"; then
+            echo "No compatible verified runtime Release was found; the runtime will be built."
           fi
+          echo "release-tag=$runtime_release_tag" >> "$GITHUB_OUTPUT"
 
   quality:
     needs: prepare
