@@ -1,0 +1,3 @@
+# Minimum stable OpenAI Codex source version considered by automatic releases.
+# The first non-comment version is the release baseline.
+0.147.0
