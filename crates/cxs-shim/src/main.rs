@@ -825,7 +825,7 @@ mod tests {
         let mut agent = std::process::Command::new("/bin/bash")
             .args([
                 "-c",
-                "exec -a __cxs-agent \"$1\" --ignored --exact replacement_agent_fixture",
+                "exec -a __cxs-agent \"$1\" --ignored --exact tests::replacement_agent_fixture",
                 "cxs-test",
             ])
             .arg(executable)
