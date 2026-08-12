@@ -37,16 +37,16 @@ Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux SSH 主机
 | Mac 本地 | Linux 远程 |
 | --- | --- |
 | Apple Silicon 或 Intel macOS | arm64 或 x86_64 Linux |
-| Codex 桌面 App / 匹配的 Codex 二进制 | 支持免交互密钥登录的 OpenSSH |
+| 安装在 `/Applications` 的 ChatGPT 桌面 App | 支持免交互密钥登录的 OpenSSH |
 | OpenSSH 客户端 | `sh`、`curl`、`tar`、`sha256sum` |
 
-Shuttle Release 必须匹配本机 Codex 的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
+Shuttle 始终使用 `/Applications/ChatGPT.app/Contents/Resources/codex`，不会从 `PATH` 查找 `codex`。Shuttle Release 必须匹配这个内置二进制的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
 
 ## 快速开始
 
 ### 1. 安装 `cxs`
 
-安装器会自动识别 Mac 架构和本机 Codex 版本、校验 Release 文件，并把 `cxs` 安装到 `~/.local/bin`：
+安装器会自动识别 Mac 架构和 ChatGPT Desktop 内置 Codex 的版本、校验 Release 文件，并把 `cxs` 安装到 `~/.local/bin`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
@@ -58,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/i
 wget -qO- https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
 ```
 
-如需明确指定 Codex 基线，可使用 `sh -s -- --version 0.147.0`。也可以前往 [Releases](https://github.com/pengzhendong/codex-shuttle/releases) 手动下载并校验文件。
+也可以前往 [Releases](https://github.com/pengzhendong/codex-shuttle/releases) 手动下载并校验文件。
 
 ### 2. 准备 SSH
 

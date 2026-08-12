@@ -95,7 +95,7 @@ Rollback changes only Shuttle's managed remote release symlink. It does not modi
 Before filing an issue, include:
 
 - `cxs --version`
-- local Codex version
+- bundled ChatGPT Desktop Codex version
 - `cxs status <profile>` output
 - the failing `cxs doctor <profile>` check
 - Mac and remote CPU architectures

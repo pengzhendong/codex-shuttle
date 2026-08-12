@@ -1055,10 +1055,10 @@ mod tests {
         assert_eq!(
             release_asset_url(
                 "https://example.invalid/releases/download/",
-                "v0.1.0-codex.0.147.0",
+                "v0.1.1-codex.0.147.0",
                 "SHA256SUMS"
             ),
-            "https://example.invalid/releases/download/v0.1.0-codex.0.147.0/SHA256SUMS"
+            "https://example.invalid/releases/download/v0.1.1-codex.0.147.0/SHA256SUMS"
         );
     }
 
