@@ -40,7 +40,7 @@ The runtime entry point exposes only `--version`, `app-server`, and `exec-server
 
 1. `cxs install` reads the exact version of the Codex binary bundled with ChatGPT Desktop, derives its public source baseline, and detects the remote architecture.
 2. It constructs the matching runtime artifact name in the same Shuttle release as the CLI.
-3. By default the SSH host downloads the release checksum manifest and runtime in parallel with the Mac uploading `cxs-shim`. With `--local-download`, the Mac downloads and verifies the same artifact before uploading it.
+3. By default the SSH host downloads the release checksum manifest and its `cxs-runtime-linux-<arch>-codex-<version>.tar.gz` package in parallel with the Mac uploading `cxs-shim-linux-<arch>`. With `--local-download`, the Mac downloads and verifies the same artifact before uploading it.
 4. The installer verifies SHA-256, extracts into a private immutable staging directory, checks the exact version and `exec-server --help`, writes `shim.json` and `install.json`, then atomically switches `current`.
 5. `cxs up` starts one SSH stdio session. The remote shim starts the runtime Exec Server; Host channels start restricted runtime App Servers. The Mac bridge keeps the real thread/session App Server local.
 6. Readiness is granted only after environment registration and a real remote directory read succeed.

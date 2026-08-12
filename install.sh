@@ -48,8 +48,14 @@ done
 test "$(uname -s)" = Darwin || fail "the cxs CLI currently supports macOS only"
 
 case "$(uname -m)" in
-  arm64) target=aarch64-apple-darwin ;;
-  x86_64) target=x86_64-apple-darwin ;;
+  arm64)
+    asset=cxs-cli-macos-aarch64
+    legacy_asset=cxs-aarch64-apple-darwin
+    ;;
+  x86_64)
+    asset=cxs-cli-macos-x86_64
+    legacy_asset=cxs-x86_64-apple-darwin
+    ;;
   *) fail "unsupported Mac architecture: $(uname -m)" ;;
 esac
 
@@ -73,15 +79,18 @@ test -n "$codex_version" ||
 release_tag="v${SHUTTLE_VERSION}-codex.${codex_version}"
 printf 'Detected bundled ChatGPT Desktop Codex %s.\n' "$codex_version"
 
-asset="cxs-${target}"
 release_url="https://github.com/${REPOSITORY}/releases/download/${release_tag}"
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/cxs-install.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 
 printf 'Downloading %s...\n' "$asset"
-download "$release_url/$asset" "$work_dir/$asset" ||
-  fail "release $release_tag is unavailable; see https://github.com/${REPOSITORY}/releases"
+if ! download "$release_url/$asset" "$work_dir/$asset"; then
+  asset=$legacy_asset
+  printf 'Trying legacy asset %s...\n' "$asset"
+  download "$release_url/$asset" "$work_dir/$asset" ||
+    fail "release $release_tag is unavailable; see https://github.com/${REPOSITORY}/releases"
+fi
 download "$release_url/SHA256SUMS" "$work_dir/SHA256SUMS" ||
   fail "could not download SHA256SUMS for $release_tag"
 
