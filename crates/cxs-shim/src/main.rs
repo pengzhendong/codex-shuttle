@@ -11,7 +11,7 @@ use cxs_core::{
     ShimHandshake, ShimTransport,
 };
 use cxs_mux::{ChannelKind, IncomingChannel};
-use nix::sys::signal::{Signal, killpg};
+use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::Pid;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
@@ -41,7 +41,11 @@ async fn main() -> Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let config = load_config()?;
     if matches!(arguments.as_slice(), [mode] if mode == "__cxs-agent") {
-        return run_agent(&config).await;
+        return run_agent(&config, false).await;
+    }
+    if matches!(arguments.as_slice(), [mode, replace] if mode == "__cxs-agent" && replace == "--replace")
+    {
+        return run_agent(&config, true).await;
     }
     if matches!(arguments.as_slice(), [flag] if flag == "--version" || flag == "-V") {
         println!("{}", config.codex_version);
@@ -245,12 +249,15 @@ async fn open_bridge_session(
     Ok(stream)
 }
 
-async fn run_agent(config: &ShimConfig) -> Result<()> {
-    prepare_agent_socket(&config.agent_socket)?;
+async fn run_agent(config: &ShimConfig, replace: bool) -> Result<()> {
+    prepare_agent_socket(&config.agent_socket, replace).await?;
     let listener = UnixListener::bind(&config.agent_socket)
         .with_context(|| format!("could not bind {}", config.agent_socket.display()))?;
     fs::set_permissions(&config.agent_socket, fs::Permissions::from_mode(0o600))?;
     let _guard = SocketGuard(config.agent_socket.clone());
+    let pid_path = config.agent_socket.with_extension("pid");
+    write_agent_pid(&pid_path)?;
+    let _pid_guard = PidFileGuard(pid_path);
 
     let token = fs::read_to_string(&config.token_file)
         .with_context(|| format!("could not read {}", config.token_file.display()))?;
@@ -301,6 +308,8 @@ async fn serve_agent_mux(
     mut mux: cxs_mux::MuxSession,
     exec_server_port: u16,
 ) -> Result<()> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("could not listen for SIGTERM")?;
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -327,11 +336,16 @@ async fn serve_agent_mux(
             result = &mut mux.task => {
                 return result.context("multiplexed SSH task failed")?;
             }
+            signal = terminate.recv() => {
+                if signal.is_some() {
+                    return Ok(());
+                }
+            }
         }
     }
 }
 
-fn prepare_agent_socket(path: &Path) -> Result<()> {
+async fn prepare_agent_socket(path: &Path, replace: bool) -> Result<()> {
     let parent = path.parent().context("agent socket has no parent")?;
     fs::create_dir_all(parent)?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
@@ -340,13 +354,101 @@ fn prepare_agent_socket(path: &Path) -> Result<()> {
             bail!("refusing to replace non-socket path {}", path.display());
         }
         if std::os::unix::net::UnixStream::connect(path).is_ok() {
-            bail!(
-                "another cxs-agent is already listening on {}",
-                path.display()
-            );
+            if !replace {
+                bail!(
+                    "another cxs-agent is already listening on {}",
+                    path.display()
+                );
+            }
+            replace_agent(&path.with_extension("pid")).await?;
         }
-        fs::remove_file(path)?;
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
     }
+    let _ = fs::remove_file(path.with_extension("pid"));
+    Ok(())
+}
+
+fn write_agent_pid(path: &Path) -> Result<()> {
+    fs::write(path, format!("{}\n", std::process::id()))
+        .with_context(|| format!("could not write {}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+async fn replace_agent(pid_path: &Path) -> Result<()> {
+    let value = fs::read_to_string(pid_path).with_context(|| {
+        format!(
+            "could not read active agent PID from {}",
+            pid_path.display()
+        )
+    })?;
+    let raw_pid = value
+        .trim()
+        .parse::<i32>()
+        .with_context(|| format!("invalid active agent PID in {}", pid_path.display()))?;
+    if raw_pid <= 1 {
+        bail!("refusing to replace invalid cxs-agent PID {raw_pid}");
+    }
+    let pid = Pid::from_raw(raw_pid);
+    validate_agent_process(pid)?;
+    let _ = kill(pid, Signal::SIGTERM);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while process_exists(pid) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    if process_exists(pid) {
+        validate_agent_process(pid)?;
+        let _ = kill(pid, Signal::SIGKILL);
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while process_exists(pid) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    if process_exists(pid) {
+        bail!("could not stop existing cxs-agent PID {raw_pid}");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn process_exists(pid: Pid) -> bool {
+    if kill(pid, None).is_err() {
+        return false;
+    }
+    let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.as_raw())) else {
+        return true;
+    };
+    !stat
+        .rsplit_once(") ")
+        .is_some_and(|(_, status)| status.starts_with('Z'))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_exists(pid: Pid) -> bool {
+    kill(pid, None).is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn validate_agent_process(pid: Pid) -> Result<()> {
+    let command_line = fs::read(format!("/proc/{}/cmdline", pid.as_raw()))
+        .context("could not inspect the active cxs-agent process")?;
+    if !command_line
+        .split(|byte| *byte == 0)
+        .any(|argument| argument == b"__cxs-agent")
+    {
+        bail!(
+            "refusing to replace PID {} because it is not cxs-agent",
+            pid.as_raw()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(clippy::unnecessary_wraps)]
+fn validate_agent_process(_pid: Pid) -> Result<()> {
     Ok(())
 }
 
@@ -495,6 +597,14 @@ impl Drop for SocketGuard {
     }
 }
 
+struct PidFileGuard(PathBuf);
+
+impl Drop for PidFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 fn available_exec_server_port(preferred: u16) -> Result<u16> {
     if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", preferred)) {
         return Ok(listener.local_addr()?.port());
@@ -562,6 +672,8 @@ async fn delegate_or_reject(config: &ShimConfig, arguments: &[String]) -> Result
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+
     use cxs_core::{AppPaths, ProfileStatus, ProfileStore};
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{Value, json};
@@ -582,6 +694,28 @@ mod tests {
             "--listen".to_owned(),
             "stdio://".to_owned()
         ]));
+    }
+
+    #[tokio::test]
+    async fn replacement_stops_the_previous_agent() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        let mut previous = std::process::Command::new("/bin/sleep");
+        previous.arg0("__cxs-agent").arg("60");
+        let mut previous = previous.spawn()?;
+        fs::write(socket.with_extension("pid"), previous.id().to_string())?;
+        let reaper = std::thread::spawn(move || previous.wait());
+
+        prepare_agent_socket(&socket, true).await?;
+
+        let status = reaper
+            .join()
+            .map_err(|_| anyhow::anyhow!("agent reaper thread panicked"))??;
+        assert_eq!(status.signal(), Some(Signal::SIGTERM as i32));
+        assert!(!socket.exists());
+        assert!(!socket.with_extension("pid").exists());
+        Ok(())
     }
 
     #[tokio::test]
@@ -643,7 +777,7 @@ mod tests {
         let (agent_read, agent_write) = tokio::io::split(agent_transport);
         let bridge_mux = cxs_mux::start(bridge_read, bridge_write, cxs_mux::Role::Bridge);
         let agent_mux = cxs_mux::start(agent_read, agent_write, cxs_mux::Role::Agent);
-        prepare_agent_socket(&config.agent_socket)?;
+        prepare_agent_socket(&config.agent_socket, false).await?;
         let agent_listener = UnixListener::bind(&config.agent_socket)?;
         let agent_config = config.clone();
         let agent = tokio::spawn(async move {

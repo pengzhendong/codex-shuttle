@@ -76,7 +76,7 @@ async fn start_agent(profile: &Profile, expected_token: &str) -> Result<(MuxSess
             "-o",
             "ConnectTimeout=10",
             &profile.app_alias,
-            "$HOME/.local/lib/codex-shuttle/current/cxs-shim __cxs-agent",
+            "$HOME/.local/lib/codex-shuttle/current/cxs-shim __cxs-agent --replace",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

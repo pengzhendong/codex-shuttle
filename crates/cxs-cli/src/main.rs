@@ -877,14 +877,45 @@ fn verify_remote_metadata(profile: &Profile, remote: &RemoteInstall) -> Result<(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 async fn probe_ready(profile: &Profile) -> Result<()> {
-    use tokio::io::AsyncReadExt;
-
     let probe_control_directory = format!("/tmp/cxs-{}-probe", profile.name);
     let probe_control_socket = format!("{probe_control_directory}/app.sock");
+    let probe_pid_file = format!("{probe_control_directory}/app.pid");
+    let result = probe_ready_inner(
+        profile,
+        &probe_control_directory,
+        &probe_control_socket,
+        &probe_pid_file,
+    )
+    .await;
+    let cleanup = cleanup_remote_probe(
+        profile,
+        &probe_control_directory,
+        &probe_control_socket,
+        &probe_pid_file,
+    )
+    .await;
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error).context("remote App Server probe cleanup failed"),
+        (Err(error), Err(cleanup)) => Err(anyhow::anyhow!(
+            "{error:#}; remote App Server probe cleanup also failed: {cleanup:#}"
+        )),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn probe_ready_inner(
+    profile: &Profile,
+    probe_control_directory: &str,
+    probe_control_socket: &str,
+    probe_pid_file: &str,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
     let bootstrap_command = format!(
-        r#"mkdir -p "$HOME/.config/codex-shuttle" "{probe_control_directory}"; chmod 700 "{probe_control_directory}"; rm -f "{probe_control_socket}"; CXS_CONTROL_SOCKET="{probe_control_socket}" nohup "$HOME/.local/bin/codex" -c features.code_mode_host=true app-server --listen unix:// >"$HOME/.config/codex-shuttle/probe-{}.log" 2>&1 </dev/null & probe_pid=$!; probe_tries=0; while [ "$probe_tries" -lt 100 ]; do [ -S "{probe_control_socket}" ] && exit 0; kill -0 "$probe_pid" 2>/dev/null || break; probe_tries=$((probe_tries + 1)); sleep 0.1; done; cat "$HOME/.config/codex-shuttle/probe-{}.log" >&2; exit 1"#,
+        r#"mkdir -p "$HOME/.config/codex-shuttle" "{probe_control_directory}"; chmod 700 "{probe_control_directory}"; rm -f "{probe_control_socket}" "{probe_pid_file}"; CXS_CONTROL_SOCKET="{probe_control_socket}" nohup "$HOME/.local/bin/codex" -c features.code_mode_host=true app-server --listen unix:// >"$HOME/.config/codex-shuttle/probe-{}.log" 2>&1 </dev/null & probe_pid=$!; printf '%s\n' "$probe_pid" >"{probe_pid_file}"; chmod 600 "{probe_pid_file}"; probe_tries=0; while [ "$probe_tries" -lt 100 ]; do [ -S "{probe_control_socket}" ] && exit 0; kill -0 "$probe_pid" 2>/dev/null || break; probe_tries=$((probe_tries + 1)); sleep 0.1; done; cat "$HOME/.config/codex-shuttle/probe-{}.log" >&2; exit 1"#,
         profile.name, profile.name
     );
     let bootstrap = tokio::time::timeout(
@@ -1096,6 +1127,37 @@ async fn probe_ready(profile: &Profile) -> Result<()> {
         let detail = String::from_utf8_lossy(&diagnostic);
         format!("SSH probe diagnostic: {}", detail.trim())
     })
+}
+
+async fn cleanup_remote_probe(
+    profile: &Profile,
+    probe_control_directory: &str,
+    probe_control_socket: &str,
+    probe_pid_file: &str,
+) -> Result<()> {
+    let cleanup_command = format!(
+        r#"probe_pid=''; if [ -f "{probe_pid_file}" ]; then probe_pid=$(cat "{probe_pid_file}" 2>/dev/null || true); fi; case "$probe_pid" in ''|*[!0-9]*) ;; *) kill -TERM "$probe_pid" 2>/dev/null || true; cleanup_tries=0; while kill -0 "$probe_pid" 2>/dev/null && [ "$cleanup_tries" -lt 20 ]; do cleanup_tries=$((cleanup_tries + 1)); sleep 0.1; done; if kill -0 "$probe_pid" 2>/dev/null; then kill -KILL "$probe_pid" 2>/dev/null || true; fi ;; esac; rm -f "{probe_control_socket}" "{probe_pid_file}"; rmdir "{probe_control_directory}" 2>/dev/null || true"#
+    );
+    let status = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new("ssh")
+            .args([
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                &profile.app_alias,
+                &cleanup_command,
+            ])
+            .status(),
+    )
+    .await
+    .context("remote probe cleanup timed out")??;
+    if !status.success() {
+        bail!("remote probe cleanup exited with {status}");
+    }
+    Ok(())
 }
 
 struct ProcessIo {
