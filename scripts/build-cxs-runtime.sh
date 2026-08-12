@@ -11,13 +11,14 @@ target=$2
 output_dir=$3
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 work_root=${RUNNER_TEMP:-"$repo_root/target/runtime-build"}
-source_dir="$work_root/codex-$version"
+source_dir="$work_root/codex-source"
 source_archive="$work_root/codex-$version.tar.gz"
 target_dir=${CXS_RUNTIME_TARGET_DIR:-"$work_root/cxs-runtime-target-$target"}
 tag="rust-v$version"
 
 mkdir -p "$work_root" "$output_dir"
-if test ! -f "$source_dir/codex-rs/Cargo.toml"; then
+source_version=$(cat "$source_dir/.cxs-codex-version" 2>/dev/null || true)
+if test ! -f "$source_dir/codex-rs/Cargo.toml" || test "$source_version" != "$version"; then
   rm -rf "$source_dir"
   curl --http1.1 --fail --location --retry 5 --retry-all-errors \
     --output "$source_archive.partial" \
@@ -25,6 +26,7 @@ if test ! -f "$source_dir/codex-rs/Cargo.toml"; then
   mv "$source_archive.partial" "$source_archive"
   mkdir "$source_dir"
   tar -xzf "$source_archive" -C "$source_dir" --strip-components=1
+  printf '%s\n' "$version" > "$source_dir/.cxs-codex-version"
 fi
 
 rm -rf "$source_dir/codex-rs/cxs-runtime"
