@@ -194,7 +194,7 @@ jobs:
           pattern: cxs-*
           merge-multiple: true
       - run: sha256sum cxs-* > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.release-tag }}
           target_commitish: ${{ github.sha }}
