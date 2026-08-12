@@ -811,7 +811,7 @@ mod tests {
 
         assert_eq!(
             find_socket_owner(&path)?.as_raw(),
-            std::process::id() as i32
+            i32::try_from(std::process::id())?
         );
         Ok(())
     }
