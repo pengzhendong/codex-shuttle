@@ -13,6 +13,7 @@ use tempfile::TempDir;
 
 const SHUTTLE_RELEASES: &str = "https://github.com/pengzhendong/codex-shuttle/releases/download";
 const REMOTE_LAYOUT_VERSION: u32 = 3;
+const REMOTE_INSPECT_COMMAND: &str = "set -eu; cat \"$HOME/.config/codex-shuttle/install.json\"; printf '\\n'; \"$HOME/.local/bin/codex\" --version >&2; \"${SHELL:-/bin/sh}\" -l -i -c 'command -v codex >/dev/null' >/dev/null 2>&1";
 
 fn shuttle_release_tag() -> &'static str {
     option_env!("CXS_RELEASE_TAG").unwrap_or(concat!("v", env!("CARGO_PKG_VERSION")))
@@ -588,10 +589,7 @@ where
 }
 
 pub fn inspect(profile: &Profile) -> Result<RemoteInstall> {
-    let output = ssh_output(
-        &profile.source_host,
-        "set -eu; cat \"$HOME/.config/codex-shuttle/install.json\"; printf '\\n'; \"$HOME/.local/bin/codex\" --version >&2; \"${SHELL:-/bin/sh}\" -l -i -c 'command -v codex >/dev/null' 2>/dev/null",
-    )?;
+    let output = ssh_output(&profile.source_host, REMOTE_INSPECT_COMMAND)?;
     serde_json::from_slice(&output).context("remote install metadata is invalid")
 }
 
@@ -1060,11 +1058,58 @@ mod tests {
         assert_eq!(
             release_asset_url(
                 "https://example.invalid/releases/download/",
-                "v0.1.1-codex.0.147.0",
+                "v0.1.2-codex.0.147.0",
                 "SHA256SUMS"
             ),
-            "https://example.invalid/releases/download/v0.1.1-codex.0.147.0/SHA256SUMS"
+            "https://example.invalid/releases/download/v0.1.2-codex.0.147.0/SHA256SUMS"
         );
+    }
+
+    #[test]
+    fn login_banner_does_not_pollute_install_metadata() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config_directory = directory.path().join(".config/codex-shuttle");
+        let bin_directory = directory.path().join(".local/bin");
+        fs::create_dir_all(&config_directory)?;
+        fs::create_dir_all(&bin_directory)?;
+        let install = RemoteInstall {
+            layout_version: REMOTE_LAYOUT_VERSION,
+            profile: "banner-host".to_owned(),
+            codex_version: "codex-cli 0.147.0-alpha.6.5".to_owned(),
+            runtime_version: Some("codex-cli 0.147.0".to_owned()),
+            target: "x86_64-unknown-linux-musl".to_owned(),
+            package_sha256: Some("a".repeat(64)),
+            shim_sha256: "b".repeat(64),
+            release: "codex-0.147.0-test".to_owned(),
+            executor_source: Some(ExecutorSource::ManagedRuntime),
+            executor_path: Some("/tmp/cxs-runtime".to_owned()),
+            executor_sha256: None,
+        };
+        fs::write(
+            config_directory.join("install.json"),
+            serde_json::to_vec(&install)?,
+        )?;
+        let codex = bin_directory.join("codex");
+        fs::write(
+            &codex,
+            "#!/bin/sh\nprintf 'codex-cli 0.147.0-alpha.6.5\\n'\n",
+        )?;
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o700))?;
+        let login_shell = directory.path().join("login-shell");
+        fs::write(&login_shell, "#!/bin/sh\nprintf 'Welcome to PAI DSW!\\n'\n")?;
+        fs::set_permissions(&login_shell, fs::Permissions::from_mode(0o700))?;
+
+        let output = Command::new("/bin/sh")
+            .args(["-c", REMOTE_INSPECT_COMMAND])
+            .env("HOME", directory.path())
+            .env("SHELL", login_shell)
+            .output()?;
+        assert!(output.status.success());
+        assert_eq!(
+            serde_json::from_slice::<RemoteInstall>(&output.stdout)?,
+            install
+        );
+        Ok(())
     }
 
     #[test]
