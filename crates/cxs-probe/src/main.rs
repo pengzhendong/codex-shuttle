@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::Parser;
+use cxs_core::desktop_codex_path;
 use cxs_probe::local_codex_checks;
 use cxs_ssh::query_remote;
 use serde::Serialize;
@@ -9,10 +8,6 @@ use serde::Serialize;
 #[derive(Debug, Parser)]
 #[command(about = "Probe Codex Shuttle contracts", version)]
 struct Arguments {
-    /// Codex executable to inspect.
-    #[arg(long, default_value = "codex")]
-    codex: PathBuf,
-
     /// Optional existing SSH host alias to inspect.
     #[arg(long)]
     host: Option<String>,
@@ -37,7 +32,7 @@ struct RemoteReport {
 
 fn main() -> Result<()> {
     let arguments = Arguments::parse();
-    let local = local_codex_checks(&arguments.codex);
+    let local = local_codex_checks(desktop_codex_path());
     let remote = arguments.host.map(|host| match query_remote(&host) {
         Ok(facts) => RemoteReport {
             host,

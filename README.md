@@ -37,16 +37,16 @@ It uses your existing OpenSSH configuration and one ordinary SSH stdio connectio
 | Local | Remote |
 | --- | --- |
 | macOS on Apple Silicon or Intel | Linux on arm64 or x86_64 |
-| Codex desktop app / matching Codex binary | OpenSSH access with non-interactive key authentication |
+| ChatGPT desktop app installed in `/Applications` | OpenSSH access with non-interactive key authentication |
 | OpenSSH client | `sh`, `curl`, `tar`, and `sha256sum` |
 
-The selected Shuttle release must match the public source baseline of your local Codex. For example, a desktop build reporting `0.147.0-alpha.6.5` uses the Shuttle release for Codex `0.147.0`.
+Shuttle always uses the Codex binary bundled in `/Applications/ChatGPT.app/Contents/Resources/codex`; it never resolves `codex` from `PATH`. The selected Shuttle release must match that binary's public source baseline. For example, a desktop build reporting `0.147.0-alpha.6.5` uses the Shuttle release for Codex `0.147.0`.
 
 ## Quick start
 
 ### 1. Install `cxs`
 
-The installer detects your Mac architecture and local Codex version, verifies the release checksum, and installs `cxs` to `~/.local/bin`:
+The installer detects your Mac architecture and the bundled ChatGPT Desktop Codex version, verifies the release checksum, and installs `cxs` to `~/.local/bin`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
@@ -58,7 +58,7 @@ Or with `wget`:
 wget -qO- https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
 ```
 
-To select a Codex baseline explicitly, use `sh -s -- --version 0.147.0`. You can also download and verify a binary manually from [Releases](https://github.com/pengzhendong/codex-shuttle/releases).
+You can also download and verify a binary manually from [Releases](https://github.com/pengzhendong/codex-shuttle/releases).
 
 ### 2. Prepare SSH
 

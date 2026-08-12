@@ -13,10 +13,16 @@ use thiserror::Error;
 pub mod routing;
 
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+pub const DESKTOP_CODEX_PATH: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 pub const SHIM_PROTOCOL_VERSION: u32 = 1;
 pub const SHIM_MAGIC: &str = "CXS1";
 pub const AGENT_PROTOCOL_VERSION: u32 = 1;
 pub const AGENT_MAGIC: &str = "CXS-AGENT1";
+
+#[must_use]
+pub fn desktop_codex_path() -> &'static Path {
+    Path::new(DESKTOP_CODEX_PATH)
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum NameError {
@@ -450,6 +456,14 @@ mod tests {
         assert_eq!(
             validate_profile_name("gpu/server"),
             Err(NameError::InvalidCharacter)
+        );
+    }
+
+    #[test]
+    fn desktop_codex_path_is_the_bundled_app_binary() {
+        assert_eq!(
+            desktop_codex_path(),
+            Path::new("/Applications/ChatGPT.app/Contents/Resources/codex")
         );
     }
 

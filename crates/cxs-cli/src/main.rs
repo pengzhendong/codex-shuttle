@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use cxs_core::{
-    AppPaths, OperationLockMode, Profile, ProfileStatus, ProfileStore, validate_profile_name,
+    AppPaths, OperationLockMode, Profile, ProfileStatus, ProfileStore, desktop_codex_path,
+    validate_profile_name,
 };
 use cxs_install::{InstallOptions, RemoteInstall};
 use cxs_probe::{codex_version, local_codex_checks};
@@ -51,8 +52,6 @@ enum Commands {
         host: String,
         #[arg(long)]
         name: Option<String>,
-        #[arg(long, default_value = "codex")]
-        codex: PathBuf,
         /// Resolve SSH configuration without opening a network connection.
         #[arg(long)]
         offline: bool,
@@ -65,8 +64,6 @@ enum Commands {
     /// Check local Codex, SSH, remote Linux, and adapter readiness.
     Doctor {
         profile: String,
-        #[arg(long, default_value = "codex")]
-        codex: PathBuf,
         #[arg(long)]
         offline: bool,
     },
@@ -85,10 +82,8 @@ enum Commands {
         /// Use a local Linux cxs-shim binary instead of downloading it.
         #[arg(long)]
         shim: Option<PathBuf>,
-        #[arg(long, default_value = "codex")]
-        codex: PathBuf,
     },
-    /// Install artifacts matching the current local Codex version.
+    /// Install artifacts matching the desktop-bundled Codex version.
     Update {
         profile: String,
         #[arg(long, conflicts_with_all = ["remote_codex", "local_download"])]
@@ -101,21 +96,11 @@ enum Commands {
         remote_codex: Option<String>,
         #[arg(long)]
         shim: Option<PathBuf>,
-        #[arg(long, default_value = "codex")]
-        codex: PathBuf,
     },
     /// Switch to the previous release and verify it end to end.
-    Rollback {
-        profile: String,
-        #[arg(long, default_value = "codex")]
-        codex: PathBuf,
-    },
+    Rollback { profile: String },
     /// Start the local bridge in the background.
-    Up {
-        profile: String,
-        #[arg(long, default_value = "codex")]
-        codex: PathBuf,
-    },
+    Up { profile: String },
     /// Stop the profile's local bridge.
     Down { profile: String },
     /// Print the generated SSH host block.
@@ -137,11 +122,7 @@ enum Commands {
         provider: Option<String>,
     },
     /// Run the local relay for a prepared profile.
-    Bridge {
-        profile: String,
-        #[arg(long, default_value = "codex")]
-        codex: PathBuf,
-    },
+    Bridge { profile: String },
     /// Remove local state and the generated SSH host block.
     #[command(alias = "rm")]
     Remove {
@@ -164,25 +145,26 @@ async fn main() -> Result<()> {
         Commands::Add {
             host,
             name,
-            codex,
             offline,
         } => {
             let profile_name = name.as_deref().unwrap_or(&host);
             let _lock = store.lock_profile(profile_name, OperationLockMode::Exclusive)?;
-            add(&store, &host, name.as_deref(), &codex, offline)
+            add(
+                &store,
+                &host,
+                name.as_deref(),
+                desktop_codex_path(),
+                offline,
+            )
         }
         Commands::List => list(&store),
         Commands::Status { profile } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Shared)?;
             status(&store, &profile)
         }
-        Commands::Doctor {
-            profile,
-            codex,
-            offline,
-        } => {
+        Commands::Doctor { profile, offline } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Shared)?;
-            doctor(&store, &profile, &codex, offline).await
+            doctor(&store, &profile, desktop_codex_path(), offline).await
         }
         Commands::Install {
             profile,
@@ -190,7 +172,6 @@ async fn main() -> Result<()> {
             local_download,
             remote_codex,
             shim,
-            codex,
         }
         | Commands::Update {
             profile,
@@ -198,13 +179,12 @@ async fn main() -> Result<()> {
             local_download,
             remote_codex,
             shim,
-            codex,
         } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Exclusive)?;
             install(
                 &store,
                 &profile,
-                &codex,
+                desktop_codex_path(),
                 InstallArtifacts {
                     runtime_package,
                     local_download,
@@ -214,13 +194,13 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Rollback { profile, codex } => {
+        Commands::Rollback { profile } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Exclusive)?;
-            rollback(&store, &profile, &codex).await
+            rollback(&store, &profile, desktop_codex_path()).await
         }
-        Commands::Up { profile, codex } => {
+        Commands::Up { profile } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Exclusive)?;
-            up(&store, &profile, &codex)
+            up(&store, &profile, desktop_codex_path())
         }
         Commands::Down { profile } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Exclusive)?;
@@ -241,9 +221,9 @@ async fn main() -> Result<()> {
             provider.as_deref(),
         ),
         Commands::Repair { provider } => session_commands::repair(&store, provider.as_deref()),
-        Commands::Bridge { profile, codex } => {
+        Commands::Bridge { profile } => {
             let profile = store.load(&profile)?;
-            cxs_bridge::serve(profile, store, codex).await
+            cxs_bridge::serve(profile, store, desktop_codex_path().to_path_buf()).await
         }
         Commands::Remove {
             profile,
@@ -722,8 +702,6 @@ fn up(store: &ProfileStore, name: &str, codex: &Path) -> Result<()> {
     let child = Command::new(executable)
         .arg("bridge")
         .arg(name)
-        .arg("--codex")
-        .arg(codex)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))

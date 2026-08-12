@@ -3,26 +3,23 @@
 set -eu
 
 REPOSITORY="pengzhendong/codex-shuttle"
-SHUTTLE_VERSION="0.1.0"
+SHUTTLE_VERSION="0.1.1"
 INSTALL_DIR=${CXS_INSTALL_DIR:-"$HOME/.local/bin"}
-REQUESTED_VERSION=${CXS_VERSION:-}
+BUNDLED_CODEX="/Applications/ChatGPT.app/Contents/Resources/codex"
 
 usage() {
   cat <<'EOF'
 Install Codex Shuttle on macOS.
 
 Usage:
-  install.sh [--version <codex-version|release-tag>] [--install-dir <directory>]
+  install.sh [--install-dir <directory>]
 
 Options:
-  --version      Codex version (for example 0.147.0) or a full Shuttle release tag
   --install-dir  Destination directory (default: ~/.local/bin)
   -h, --help     Show this help
 
 Environment:
-  CXS_VERSION      Same as --version
   CXS_INSTALL_DIR  Same as --install-dir
-  CXS_CODEX_PATH   Codex binary used for automatic version detection
 EOF
 }
 
@@ -33,11 +30,6 @@ fail() {
 
 while test "$#" -gt 0; do
   case "$1" in
-    --version)
-      test "$#" -ge 2 || fail "--version requires a value"
-      REQUESTED_VERSION=$2
-      shift 2
-      ;;
     --install-dir)
       test "$#" -ge 2 || fail "--install-dir requires a value"
       INSTALL_DIR=$2
@@ -73,61 +65,16 @@ download() {
   fi
 }
 
-detect_codex_version() {
-  if test -n "${CXS_CODEX_PATH:-}"; then
-    candidates=$CXS_CODEX_PATH
-  else
-    candidates="/Applications/ChatGPT.app/Contents/Resources/codex
-$HOME/Applications/ChatGPT.app/Contents/Resources/codex"
-    if command -v codex >/dev/null 2>&1; then
-      candidates="$candidates
-$(command -v codex)"
-    fi
-  fi
-
-  old_ifs=$IFS
-  IFS='
-'
-  for candidate in $candidates; do
-    if test -x "$candidate"; then
-      detected=$("$candidate" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-      if test -n "$detected"; then
-        printf '%s\n' "$detected"
-        IFS=$old_ifs
-        return 0
-      fi
-    fi
-  done
-  IFS=$old_ifs
-  return 1
-}
-
-if test -n "$REQUESTED_VERSION"; then
-  case "$REQUESTED_VERSION" in
-    v*-codex.*) release_tag=$REQUESTED_VERSION ;;
-    *)
-      printf '%s\n' "$REQUESTED_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
-        fail "invalid version: $REQUESTED_VERSION"
-      release_tag="v${SHUTTLE_VERSION}-codex.${REQUESTED_VERSION}"
-      ;;
-  esac
-else
-  codex_version=$(detect_codex_version || true)
-  if test -n "$codex_version"; then
-    release_tag="v${SHUTTLE_VERSION}-codex.${codex_version}"
-    printf 'Detected Codex %s.\n' "$codex_version"
-  else
-    release_tag=latest
-    printf 'Codex was not found; installing the latest Shuttle release.\n'
-  fi
-fi
+test -x "$BUNDLED_CODEX" ||
+  fail "ChatGPT Desktop Codex was not found at $BUNDLED_CODEX"
+codex_version=$("$BUNDLED_CODEX" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+test -n "$codex_version" ||
+  fail "could not detect the bundled ChatGPT Desktop Codex version"
+release_tag="v${SHUTTLE_VERSION}-codex.${codex_version}"
+printf 'Detected bundled ChatGPT Desktop Codex %s.\n' "$codex_version"
 
 asset="cxs-${target}"
-if test "$release_tag" = latest; then
-  release_url="https://github.com/${REPOSITORY}/releases/latest/download"
-else
-  release_url="https://github.com/${REPOSITORY}/releases/download/${release_tag}"
-fi
+release_url="https://github.com/${REPOSITORY}/releases/download/${release_tag}"
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/cxs-install.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
