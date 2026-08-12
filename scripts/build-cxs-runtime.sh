@@ -77,7 +77,7 @@ bwrap_dir="$work_root/bwrap-$version-$target"
 find "$bwrap_dir" -depth -delete 2>/dev/null || true
 mkdir -p "$bwrap_dir"
 tar -xzf "$bwrap_archive" -C "$bwrap_dir"
-bwrap_bin=$(find "$bwrap_dir" -type f -name bwrap -print -quit)
+bwrap_bin=$(find "$bwrap_dir" -type f \( -name bwrap -o -name "bwrap-$target" \) -print -quit)
 test -n "$bwrap_bin"
 expected_bwrap_sha=$(curl --http1.1 --fail --location --retry 5 --retry-all-errors --silent --show-error \
   "https://api.github.com/repos/openai/codex/releases/tags/$tag" | \
