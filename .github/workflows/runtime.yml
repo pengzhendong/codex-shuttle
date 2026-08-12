@@ -14,7 +14,6 @@ on:
         type: string
 
 permissions:
-  actions: write
   contents: read
 
 jobs:
@@ -40,15 +39,19 @@ jobs:
       - uses: taiki-e/install-action@v2.85.11
         with:
           tool: cargo-zigbuild@0.22.3
-      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: actions/cache@v5
         with:
-          version: v0.17.0
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/cxs-runtime-target-${{ matrix.target }}
+          key: cxs-runtime-v2-${{ matrix.target }}-${{ inputs.codex_version }}-${{ hashFiles('runtime/cxs-runtime/**', 'scripts/build-cxs-runtime.sh') }}
+          restore-keys: |
+            cxs-runtime-v2-${{ matrix.target }}-${{ inputs.codex_version }}-
+            cxs-runtime-v2-${{ matrix.target }}-
       - name: Build runtime package
         env:
           CXS_RUNTIME_CARGO: cargo-zigbuild
-          RUSTC_WRAPPER: sccache
-          SCCACHE_BASEDIRS: ${{ runner.temp }}
-          SCCACHE_GHA_ENABLED: "true"
         run: scripts/build-cxs-runtime.sh "${{ inputs.codex_version }}" "${{ matrix.target }}" runtime-artifacts
       - uses: actions/upload-artifact@v7
         with:
