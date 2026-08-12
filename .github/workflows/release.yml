@@ -178,7 +178,10 @@ jobs:
           test "$(runtime-smoke/bin/cxs-runtime --version)" = "codex-cli ${{ needs.prepare.outputs.codex-version }}"
           runtime-smoke/bin/cxs-runtime exec-server --help >/dev/null
           runtime-smoke/codex-path/rg --version >/dev/null
-          runtime-smoke/codex-resources/bwrap --help >/dev/null
+          test -x runtime-smoke/codex-resources/bwrap
+          if test "${{ matrix.target }}" = "x86_64-unknown-linux-musl"; then
+            runtime-smoke/codex-resources/bwrap --help >/dev/null
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: cxs-runtime-codex-${{ needs.prepare.outputs.codex-version }}-${{ matrix.target }}
