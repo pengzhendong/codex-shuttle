@@ -1,0 +1,29 @@
+[package]
+name = "cxs-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cxs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+cxs-bridge = { path = "../cxs-bridge" }
+cxs-core = { path = "../cxs-core" }
+cxs-install = { path = "../cxs-install" }
+cxs-probe = { path = "../cxs-probe" }
+cxs-sessions = { path = "../cxs-sessions" }
+cxs-ssh = { path = "../cxs-ssh" }
+futures-util.workspace = true
+tokio.workspace = true
+nix.workspace = true
+serde_json.workspace = true
+tokio-tungstenite.workspace = true
+
+[lints]
+workspace = true
