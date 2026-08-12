@@ -802,6 +802,63 @@ mod tests {
         assert_eq!(find_unix_socket_inode(table, "/tmp/missing.sock"), None);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_the_owner_of_a_live_unix_socket() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path)?;
+
+        assert_eq!(
+            find_socket_owner(&path)?.as_raw(),
+            std::process::id() as i32
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn live_agent_socket_is_replaced_end_to_end() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("agent.sock");
+        let executable = std::env::current_exe()?;
+        let mut agent = std::process::Command::new("/bin/bash")
+            .args([
+                "-c",
+                "exec -a __cxs-agent \"$1\" --ignored --exact replacement_agent_fixture",
+                "cxs-test",
+            ])
+            .arg(executable)
+            .env("CXS_TEST_AGENT_SOCKET", &path)
+            .spawn()?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !path.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(path.exists(), "fixture did not create its agent socket");
+        prepare_agent_socket(&path, true).await?;
+
+        let status = agent.wait()?;
+        assert_eq!(status.signal(), Some(Signal::SIGTERM as i32));
+        assert!(!path.exists());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "helper process for live_agent_socket_is_replaced_end_to_end"]
+    fn replacement_agent_fixture() -> Result<()> {
+        let path = PathBuf::from(
+            std::env::var_os("CXS_TEST_AGENT_SOCKET")
+                .context("CXS_TEST_AGENT_SOCKET is required for the replacement fixture")?,
+        );
+        let _listener = std::os::unix::net::UnixListener::bind(&path)?;
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
     #[tokio::test]
     #[ignore = "requires a compatible local Codex binary"]
     #[allow(clippy::too_many_lines)]
