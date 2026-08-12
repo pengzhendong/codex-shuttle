@@ -5,7 +5,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use fs4::fs_std::FileExt;
+use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use thiserror::Error;
@@ -201,12 +201,19 @@ impl ProfileStore {
             .open(&path)
             .with_context(|| format!("could not open operation lock {}", path.display()))?;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        let acquired = match mode {
-            OperationLockMode::Shared => FileExt::try_lock_shared(&file)?,
-            OperationLockMode::Exclusive => FileExt::try_lock_exclusive(&file)?,
+        let result = match mode {
+            OperationLockMode::Shared => file.try_lock_shared(),
+            OperationLockMode::Exclusive => file.try_lock(),
         };
-        if !acquired {
-            bail!("another Codex Shuttle operation is already running for profile '{name}'");
+        match result {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                bail!("another Codex Shuttle operation is already running for profile '{name}'");
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(error)
+                    .with_context(|| format!("could not lock operation file {}", path.display()));
+            }
         }
         Ok(OperationLock { file })
     }
