@@ -13,6 +13,7 @@ repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 work_root=${RUNNER_TEMP:-"$repo_root/target/runtime-build"}
 source_dir="$work_root/codex-$version"
 source_archive="$work_root/codex-$version.tar.gz"
+target_dir=${CXS_RUNTIME_TARGET_DIR:-"$work_root/cxs-runtime-target-$target"}
 tag="rust-v$version"
 
 mkdir -p "$work_root" "$output_dir"
@@ -45,6 +46,13 @@ export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
 export CARGO_NET_RETRY=5
 export CARGO_PROFILE_RELEASE_DEBUG=false
+# The runtime is an RPC host rather than a compute-heavy CLI. Avoid upstream's
+# ThinLTO release setting and restore Cargo's normal parallel code generation;
+# this materially reduces first-build time without changing protocol behavior.
+export CARGO_PROFILE_RELEASE_LTO=${CARGO_PROFILE_RELEASE_LTO:-off}
+export CARGO_PROFILE_RELEASE_OPT_LEVEL=${CARGO_PROFILE_RELEASE_OPT_LEVEL:-2}
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}
+export CARGO_TARGET_DIR="$target_dir"
 if test "${CXS_RUNTIME_CARGO:-cargo}" = cargo-zigbuild; then
   cargo zigbuild --manifest-path "$source_dir/codex-rs/Cargo.toml" --release --target "$target" -p cxs-runtime
 else
@@ -56,7 +64,7 @@ stage="$work_root/$package"
 archive="$output_dir/$package.tar.gz"
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/codex-path" "$stage/codex-resources"
-install -m 0755 "$source_dir/codex-rs/target/$target/release/cxs-runtime" "$stage/bin/cxs-runtime"
+install -m 0755 "$target_dir/$target/release/cxs-runtime" "$stage/bin/cxs-runtime"
 bwrap_name="bwrap-$target.tar.gz"
 bwrap_archive="$work_root/bwrap-$version-$target.tar.gz"
 if test ! -f "$bwrap_archive"; then

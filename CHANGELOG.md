@@ -29,5 +29,7 @@ All notable changes to Codex Shuttle are documented here. The project follows se
 - Added version-bound GitHub releases that discover every unpublished stable
   OpenAI Codex source tag, build all supported targets, smoke-test both remote
   runtimes, and publish only a complete checksummed artifact set.
+- Cached per-architecture runtime builds, disabled costly runtime ThinLTO, and
+  moved automatic upstream checks to an hourly schedule.
 - Added English and Simplified Chinese project guides plus an operational
   troubleshooting guide.
