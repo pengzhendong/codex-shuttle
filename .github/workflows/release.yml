@@ -114,7 +114,7 @@ jobs:
         env:
           CXS_RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
       - run: cp target/${{ matrix.target }}/release/cxs cxs-${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cxs-${{ matrix.target }}
           path: cxs-${{ matrix.target }}
@@ -137,7 +137,7 @@ jobs:
       - run: cargo install cargo-zigbuild --locked
       - run: cargo zigbuild --locked --release -p cxs-shim --target ${{ matrix.target }}
       - run: cp target/${{ matrix.target }}/release/cxs-shim cxs-shim-${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cxs-shim-${{ matrix.target }}
           path: cxs-shim-${{ matrix.target }}
@@ -169,7 +169,7 @@ jobs:
           runtime-smoke/bin/cxs-runtime exec-server --help >/dev/null
           runtime-smoke/codex-path/rg --version >/dev/null
           runtime-smoke/codex-resources/bwrap --help >/dev/null
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cxs-runtime-codex-${{ needs.prepare.outputs.codex-version }}-${{ matrix.target }}
           path: runtime-artifacts/*.tar.gz
