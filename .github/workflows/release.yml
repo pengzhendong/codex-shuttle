@@ -171,6 +171,10 @@ jobs:
             cxs-runtime-${{ runner.os }}-${{ matrix.target }}-${{ needs.prepare.outputs.codex-version }}-
             cxs-runtime-${{ runner.os }}-${{ matrix.target }}-
       - run: CXS_RUNTIME_CARGO=cargo-zigbuild scripts/build-cxs-runtime.sh "${{ needs.prepare.outputs.codex-version }}" "${{ matrix.target }}" runtime-artifacts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cxs-runtime-codex-${{ needs.prepare.outputs.codex-version }}-${{ matrix.target }}
+          path: runtime-artifacts/*.tar.gz
       - name: Smoke-test runtime package
         run: |
           mkdir runtime-smoke
@@ -183,10 +187,6 @@ jobs:
             runtime-smoke/codex-path/rg --version >/dev/null
             runtime-smoke/codex-resources/bwrap --help >/dev/null
           fi
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cxs-runtime-codex-${{ needs.prepare.outputs.codex-version }}-${{ matrix.target }}
-          path: runtime-artifacts/*.tar.gz
 
   publish:
     needs: [prepare, quality, mac-cli, linux-shim, linux-runtime]
