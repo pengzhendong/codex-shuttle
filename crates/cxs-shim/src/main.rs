@@ -258,7 +258,7 @@ async fn run_agent(config: &ShimConfig, replace: bool) -> Result<()> {
     let _guard = SocketGuard::new(config.agent_socket.clone())?;
     let pid_path = config.agent_socket.with_extension("pid");
     write_agent_pid(&pid_path)?;
-    let _pid_guard = PidFileGuard(pid_path);
+    let _pid_guard = PidFileGuard::new(pid_path);
 
     let token = fs::read_to_string(&config.token_file)
         .with_context(|| format!("could not read {}", config.token_file.display()))?;
@@ -350,6 +350,10 @@ async fn prepare_agent_socket(path: &Path, replace: bool) -> Result<()> {
     let parent = path.parent().context("agent socket has no parent")?;
     fs::create_dir_all(parent)?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    #[cfg(target_os = "linux")]
+    if replace {
+        stop_existing_agents().await?;
+    }
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if !metadata.file_type().is_socket() {
             bail!("refusing to replace non-socket path {}", path.display());
@@ -382,6 +386,58 @@ async fn replace_agent(socket_path: &Path, pid_path: &Path) -> Result<()> {
     let pid = active_agent_pid(socket_path, pid_path)?;
     validate_agent_process(pid)?;
     stop_agent_process(pid).await
+}
+
+#[cfg(target_os = "linux")]
+async fn stop_existing_agents() -> Result<()> {
+    for pid in existing_agent_processes()? {
+        if !process_exists(pid) {
+            continue;
+        }
+        if let Err(error) = validate_agent_process(pid) {
+            if !process_exists(pid) {
+                continue;
+            }
+            return Err(error);
+        }
+        stop_agent_process(pid).await?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn existing_agent_processes() -> Result<Vec<Pid>> {
+    let current_process_id =
+        i32::try_from(std::process::id()).context("current PID exceeded i32")?;
+    let current_user_id = fs::metadata("/proc/self")?.uid();
+    let mut agents = Vec::new();
+    for process in fs::read_dir("/proc").context("could not inspect Linux processes")? {
+        let Ok(process) = process else { continue };
+        let Some(raw_pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        if raw_pid <= 1 || raw_pid == current_process_id {
+            continue;
+        }
+        let Ok(metadata) = process.metadata() else {
+            continue;
+        };
+        if metadata.uid() != current_user_id {
+            continue;
+        }
+        let Ok(command_line) = fs::read(process.path().join("cmdline")) else {
+            continue;
+        };
+        if is_agent_command_line(&command_line) {
+            agents.push(Pid::from_raw(raw_pid));
+        }
+    }
+    agents.sort_unstable_by_key(|pid| pid.as_raw());
+    Ok(agents)
 }
 
 #[cfg(target_os = "linux")]
@@ -686,11 +742,29 @@ impl Drop for SocketGuard {
     }
 }
 
-struct PidFileGuard(PathBuf);
+struct PidFileGuard {
+    path: PathBuf,
+    pid: u32,
+}
+
+impl PidFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            pid: std::process::id(),
+        }
+    }
+}
 
 impl Drop for PidFileGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let still_owned = fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            == Some(self.pid);
+        if still_owned {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -856,31 +930,56 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn pid_guard_does_not_unlink_a_replacement_pid_file() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("agent.pid");
+        write_agent_pid(&path)?;
+        let guard = PidFileGuard::new(path.clone());
+        let replacement_pid = std::process::id().saturating_add(1);
+        fs::write(&path, format!("{replacement_pid}\n"))?;
+
+        drop(guard);
+        assert_eq!(fs::read_to_string(path)?, format!("{replacement_pid}\n"));
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn live_agent_socket_is_replaced_end_to_end() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("agent.sock");
+        let legacy_path = directory.path().join("legacy-agent.sock");
         let executable = std::env::current_exe()?;
-        let mut agent = std::process::Command::new("/bin/bash")
-            .args([
-                "-c",
-                "exec -a __cxs-agent \"$1\" --ignored --exact tests::replacement_agent_fixture",
-                "cxs-test",
-            ])
-            .arg(executable)
-            .env("CXS_TEST_AGENT_SOCKET", &path)
-            .spawn()?;
+        let spawn_agent = |socket: &Path| {
+            std::process::Command::new("/bin/bash")
+                .args([
+                    "-c",
+                    "exec -a __cxs-agent \"$1\" --ignored --exact tests::replacement_agent_fixture",
+                    "cxs-test",
+                ])
+                .arg(&executable)
+                .env("CXS_TEST_AGENT_SOCKET", socket)
+                .spawn()
+        };
+        let mut agent = spawn_agent(&path)?;
+        let mut legacy_agent = spawn_agent(&legacy_path)?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while !path.exists() && tokio::time::Instant::now() < deadline {
+        while (!path.exists() || !legacy_path.exists()) && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert!(path.exists(), "fixture did not create its agent socket");
+        assert!(
+            legacy_path.exists(),
+            "legacy fixture did not create its agent socket"
+        );
         prepare_agent_socket(&path, true).await?;
 
         let status = agent.wait()?;
+        let legacy_status = legacy_agent.wait()?;
         assert_eq!(status.signal(), Some(Signal::SIGTERM as i32));
+        assert_eq!(legacy_status.signal(), Some(Signal::SIGTERM as i32));
         assert!(!path.exists());
         Ok(())
     }
