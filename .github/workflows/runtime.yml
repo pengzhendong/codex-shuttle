@@ -41,20 +41,35 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ env.REUSE_RELEASE_TAG }}
-          RUNTIME_NAME: cxs-runtime-codex-${{ inputs.codex_version }}-${{ matrix.target }}.tar.gz
+          CODEX_VERSION: ${{ inputs.codex_version }}
+          TARGET: ${{ matrix.target }}
         run: |
+          case "$TARGET" in
+            x86_64-*) arch=x86_64 ;;
+            aarch64-*) arch=aarch64 ;;
+          esac
+          runtime_name="cxs-runtime-linux-${arch}-codex-${CODEX_VERSION}.tar.gz"
+          legacy_name="cxs-runtime-codex-${CODEX_VERSION}-${TARGET}.tar.gz"
           mkdir runtime-artifacts
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$RUNTIME_NAME" \
-            --pattern SHA256SUMS \
-            --dir runtime-artifacts
-          awk -v name="$RUNTIME_NAME" '$2 == name' runtime-artifacts/SHA256SUMS > runtime-artifacts/runtime.sha256
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS --dir runtime-artifacts
+          if ! gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$runtime_name" --dir runtime-artifacts; then
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$legacy_name" --dir runtime-artifacts
+            downloaded_name=$legacy_name
+          else
+            downloaded_name=$runtime_name
+          fi
+          awk -v name="$downloaded_name" '$2 == name' runtime-artifacts/SHA256SUMS > runtime-artifacts/runtime.sha256
           test -s runtime-artifacts/runtime.sha256
           (cd runtime-artifacts && sha256sum --check runtime.sha256)
+          if test "$downloaded_name" != "$runtime_name"; then
+            mv "runtime-artifacts/$downloaded_name" "runtime-artifacts/$runtime_name"
+          fi
       - uses: actions/upload-artifact@v7
         with:
-          name: cxs-runtime-codex-${{ inputs.codex_version }}-${{ matrix.target }}
+          name: cxs-runtime-${{ matrix.target }}
           path: runtime-artifacts/*.tar.gz
 
   runtime:
@@ -96,12 +111,16 @@ jobs:
         run: scripts/build-cxs-runtime.sh "${{ inputs.codex_version }}" "${{ matrix.target }}" runtime-artifacts
       - uses: actions/upload-artifact@v7
         with:
-          name: cxs-runtime-codex-${{ inputs.codex_version }}-${{ matrix.target }}
+          name: cxs-runtime-${{ matrix.target }}
           path: runtime-artifacts/*.tar.gz
       - name: Smoke-test runtime package
         run: |
+          case "${{ matrix.target }}" in
+            x86_64-*) arch=x86_64 ;;
+            aarch64-*) arch=aarch64 ;;
+          esac
           mkdir runtime-smoke
-          tar -xzf runtime-artifacts/cxs-runtime-codex-${{ inputs.codex_version }}-${{ matrix.target }}.tar.gz -C runtime-smoke
+          tar -xzf runtime-artifacts/cxs-runtime-linux-${arch}-codex-${{ inputs.codex_version }}.tar.gz -C runtime-smoke
           test "$(runtime-smoke/bin/cxs-runtime --version)" = "codex-cli ${{ inputs.codex_version }}"
           runtime-smoke/bin/cxs-runtime exec-server --help >/dev/null
           runtime-smoke/codex-path/rg --version >/dev/null

@@ -61,7 +61,12 @@ else
   "${CXS_RUNTIME_CARGO:-cargo}" build --manifest-path "$source_dir/codex-rs/Cargo.toml" --release --target "$target" -p cxs-runtime
 fi
 
-package="cxs-runtime-codex-$version-$target"
+case "$target" in
+  x86_64-*) arch=x86_64 ;;
+  aarch64-*) arch=aarch64 ;;
+  *) echo "unsupported runtime target: $target" >&2; exit 2 ;;
+esac
+package="cxs-runtime-linux-$arch-codex-$version"
 stage="$work_root/$package"
 archive="$output_dir/$package.tar.gz"
 rm -rf "$stage"

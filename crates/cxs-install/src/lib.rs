@@ -206,7 +206,12 @@ pub fn install(
         None
     };
 
-    let runtime_name = format!("cxs-runtime-codex-{version}-{target}.tar.gz");
+    let arch = match target {
+        "x86_64-unknown-linux-musl" => "x86_64",
+        "aarch64-unknown-linux-musl" => "aarch64",
+        _ => unreachable!("linux_target returned an unsupported target"),
+    };
+    let runtime_name = format!("cxs-runtime-linux-{arch}-codex-{version}.tar.gz");
     let remote_package = format!("/tmp/cxs-{}-codex.tar.gz", profile.name);
     let remote_package_partial = format!("{remote_package}.partial");
     let release_tag = shuttle_release_tag();
@@ -237,7 +242,7 @@ pub fn install(
         })
     };
 
-    let shim_name = format!("cxs-shim-{target}");
+    let shim_name = format!("cxs-shim-linux-{arch}");
     let shim = match &options.shim {
         Some(path) => canonical_file(path, "Shuttle shim")?,
         None => download_shim(

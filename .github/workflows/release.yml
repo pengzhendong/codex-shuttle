@@ -115,14 +115,21 @@ jobs:
             valid=true
             if ! gh release download "$candidate" \
               --repo "$GITHUB_REPOSITORY" \
-              --pattern 'cxs-runtime-codex-*.tar.gz' \
+              --pattern 'cxs-runtime-*.tar.gz' \
               --pattern SHA256SUMS \
               --dir "$candidate_dir"; then
               valid=false
             fi
             if test "$valid" = true; then
               for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-                name="cxs-runtime-codex-${CODEX_VERSION}-${target}.tar.gz"
+                case "$target" in
+                  x86_64-*) arch=x86_64 ;;
+                  aarch64-*) arch=aarch64 ;;
+                esac
+                name="cxs-runtime-linux-${arch}-codex-${CODEX_VERSION}.tar.gz"
+                if ! test -f "$candidate_dir/$name"; then
+                  name="cxs-runtime-codex-${CODEX_VERSION}-${target}.tar.gz"
+                fi
                 awk -v name="$name" '$2 == name' "$candidate_dir/SHA256SUMS" > "$candidate_dir/runtime.sha256"
                 if ! test -s "$candidate_dir/runtime.sha256" ||
                   ! (cd "$candidate_dir" && sha256sum --check runtime.sha256); then
@@ -164,9 +171,11 @@ jobs:
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       matrix:
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
+        include:
+          - target: aarch64-apple-darwin
+            asset: cxs-cli-macos-aarch64
+          - target: x86_64-apple-darwin
+            asset: cxs-cli-macos-x86_64
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
@@ -176,20 +185,22 @@ jobs:
       - run: cargo build --locked --release -p cxs-cli --target ${{ matrix.target }}
         env:
           CXS_RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
-      - run: cp target/${{ matrix.target }}/release/cxs cxs-${{ matrix.target }}
+      - run: cp target/${{ matrix.target }}/release/cxs ${{ matrix.asset }}
       - uses: actions/upload-artifact@v7
         with:
-          name: cxs-${{ matrix.target }}
-          path: cxs-${{ matrix.target }}
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
   linux-shim:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+        include:
+          - target: x86_64-unknown-linux-musl
+            asset: cxs-shim-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            asset: cxs-shim-linux-aarch64
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -199,11 +210,11 @@ jobs:
       - uses: goto-bus-stop/setup-zig@v2
       - run: cargo install cargo-zigbuild --locked
       - run: cargo zigbuild --locked --release -p cxs-shim --target ${{ matrix.target }}
-      - run: cp target/${{ matrix.target }}/release/cxs-shim cxs-shim-${{ matrix.target }}
+      - run: cp target/${{ matrix.target }}/release/cxs-shim ${{ matrix.asset }}
       - uses: actions/upload-artifact@v7
         with:
-          name: cxs-shim-${{ matrix.target }}
-          path: cxs-shim-${{ matrix.target }}
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
   linux-runtime:
     needs: prepare
@@ -228,7 +239,32 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.release-tag }}
           target_commitish: ${{ github.sha }}
           name: Codex Shuttle for Codex ${{ needs.prepare.outputs.codex-version }}
+          body: |
+            ## Downloads
+
+            Most users only need the CLI for their Mac. `cxs install` automatically selects and installs the matching Linux components.
+
+            | macOS | Download | Purpose |
+            | --- | --- | --- |
+            | Apple Silicon (M1–M4) | [`cxs-cli-macos-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-macos-aarch64) | Codex Shuttle CLI |
+            | Intel | [`cxs-cli-macos-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-macos-x86_64) | Codex Shuttle CLI |
+
+            ## Installer components
+
+            These files are normally downloaded automatically; they are listed here for offline and manual installation.
+
+            | File | Purpose |
+            | --- | --- |
+            | [`cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz) | Codex runtime for ARM64 Linux hosts |
+            | [`cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz) | Codex runtime for x86_64 Linux hosts |
+            | [`cxs-shim-linux-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-aarch64) | SSH/Yamux shim for ARM64 Linux hosts |
+            | [`cxs-shim-linux-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-x86_64) | SSH/Yamux shim for x86_64 Linux hosts |
+            | [`SHA256SUMS`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/SHA256SUMS) | SHA-256 checksums for every release asset |
+
+            See the [installation guide](https://github.com/${{ github.repository }}#installation) for the recommended setup.
           generate_release_notes: true
           files: |
-            cxs-*
+            cxs-cli-*
+            cxs-runtime-*
+            cxs-shim-*
             SHA256SUMS
