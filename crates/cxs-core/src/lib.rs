@@ -202,8 +202,8 @@ impl ProfileStore {
             .with_context(|| format!("could not open operation lock {}", path.display()))?;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
         let result = match mode {
-            OperationLockMode::Shared => file.try_lock_shared(),
-            OperationLockMode::Exclusive => file.try_lock(),
+            OperationLockMode::Shared => FileExt::try_lock_shared(&file),
+            OperationLockMode::Exclusive => FileExt::try_lock(&file),
         };
         match result {
             Ok(()) => {}
