@@ -16,21 +16,19 @@ const INCLUDE_LINE: &str = "Include ~/.ssh/codex-shuttle.conf";
 pub struct SshSnapshot {
     pub source_host: String,
     pub values: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub inherited_values: BTreeMap<String, Vec<String>>,
 }
 
 impl SshSnapshot {
     pub fn resolve(source_host: &str) -> Result<Self> {
         validate_host_alias(source_host)?;
-        let output = Command::new("ssh")
-            .args(["-G", source_host])
-            .output()
-            .with_context(|| "could not run 'ssh -G'; install OpenSSH and ensure ssh is on PATH")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("ssh -G {source_host} failed: {}", stderr.trim());
-        }
-        let text = String::from_utf8(output.stdout).context("ssh -G returned non-UTF-8 output")?;
-        let values = parse_ssh_g(&text)?;
+        let values = resolve_ssh_values(source_host)?;
+        // Resolve a name that should match only generic Host blocks. The
+        // generated alias inherits those same blocks, so only source-specific
+        // differences need to be repeated in the managed file.
+        let baseline_host = format!("cxs-inherited-probe-{}.invalid", std::process::id());
+        let inherited_values = resolve_ssh_values(&baseline_host)?;
         for required in ["hostname", "user", "port"] {
             if first_value(&values, required).is_none() {
                 bail!("ssh -G output did not include '{required}'");
@@ -39,6 +37,7 @@ impl SshSnapshot {
         Ok(Self {
             source_host: source_host.to_owned(),
             values,
+            inherited_values,
         })
     }
 
@@ -208,9 +207,9 @@ pub fn render_host(profile: &Profile, snapshot: &SshSnapshot) -> Result<String> 
         "stricthostkeychecking",
         "userknownhostsfile",
     ] {
-        append_values(&mut output, snapshot, key)?;
+        append_source_values(&mut output, snapshot, key)?;
     }
-    append_values(&mut output, snapshot, "identityfile")?;
+    append_source_values(&mut output, snapshot, "identityfile")?;
 
     if let Some(proxy_command) = snapshot.value("proxycommand")
         && proxy_command != "none"
@@ -245,6 +244,19 @@ fn parse_ssh_g(text: &str) -> Result<BTreeMap<String, Vec<String>>> {
     Ok(values)
 }
 
+fn resolve_ssh_values(host: &str) -> Result<BTreeMap<String, Vec<String>>> {
+    let output = Command::new("ssh")
+        .args(["-G", host])
+        .output()
+        .with_context(|| "could not run 'ssh -G'; install OpenSSH and ensure ssh is on PATH")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("ssh -G {host} failed: {}", stderr.trim());
+    }
+    let text = String::from_utf8(output.stdout).context("ssh -G returned non-UTF-8 output")?;
+    parse_ssh_g(&text)
+}
+
 fn first_value<'a>(values: &'a BTreeMap<String, Vec<String>>, key: &str) -> Option<&'a str> {
     values
         .get(key)
@@ -252,12 +264,24 @@ fn first_value<'a>(values: &'a BTreeMap<String, Vec<String>>, key: &str) -> Opti
         .map(String::as_str)
 }
 
-fn append_values(output: &mut String, snapshot: &SshSnapshot, key: &str) -> Result<()> {
+fn append_source_values(output: &mut String, snapshot: &SshSnapshot, key: &str) -> Result<()> {
     let Some(values) = snapshot.values.get(key) else {
         return Ok(());
     };
+    if snapshot.inherited_values.get(key) == Some(values) {
+        return Ok(());
+    }
+    let source_values: Vec<&String> = if key == "identityfile" {
+        let inherited = snapshot.inherited_values.get(key);
+        values
+            .iter()
+            .filter(|value| inherited.is_none_or(|items| !items.contains(value)))
+            .collect()
+    } else {
+        values.iter().collect()
+    };
     let directive = directive_name(key);
-    for value in values {
+    for value in source_values {
         if value == "none" && matches!(key, "identityfile" | "proxyjump") {
             continue;
         }
@@ -410,6 +434,7 @@ mod tests {
             values: parse_ssh_g(
                 "hostname example.com\nuser dev\nport 22\nidentityfile ~/.ssh/id_ed25519\nproxycommand none\nuserknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts2\nipqos ef cs0\n",
             )?,
+            inherited_values: BTreeMap::new(),
         };
         let rendered = render_host(&profile(), &snapshot)?;
         assert!(rendered.contains("Host cxs-gpu"));
@@ -418,6 +443,54 @@ mod tests {
         assert!(!rendered.contains("ProxyCommand none"));
         assert!(rendered.contains("UserKnownHostsFile ~/.ssh/known_hosts ~/.ssh/known_hosts2"));
         assert!(rendered.contains("IPQoS ef cs0"));
+        Ok(())
+    }
+
+    #[test]
+    fn omits_values_inherited_by_the_generated_alias() -> Result<()> {
+        let common = parse_ssh_g(
+            "identityfile ~/.ssh/id_rsa\nidentityfile ~/.ssh/id_ed25519\ncontrolmaster auto\nserveraliveinterval 60\n",
+        )?;
+        let mut values = common.clone();
+        values.insert("hostname".to_owned(), vec!["example.com".to_owned()]);
+        values.insert("user".to_owned(), vec!["dev".to_owned()]);
+        values.insert("port".to_owned(), vec!["22".to_owned()]);
+        let snapshot = SshSnapshot {
+            source_host: "gpu-server".to_owned(),
+            values,
+            inherited_values: common,
+        };
+
+        let rendered = render_host(&profile(), &snapshot)?;
+        assert!(!rendered.contains("IdentityFile"));
+        assert!(!rendered.contains("ControlMaster"));
+        assert!(!rendered.contains("ServerAliveInterval"));
+        assert!(rendered.contains("HostName example.com"));
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_only_explicit_identity_files() -> Result<()> {
+        let inherited =
+            parse_ssh_g("identityfile ~/.ssh/id_rsa\nidentityfile ~/.ssh/id_ed25519\n")?;
+        let mut values = inherited.clone();
+        values
+            .get_mut("identityfile")
+            .expect("identity files exist")
+            .insert(0, "~/.ssh/work_key".to_owned());
+        values.insert("hostname".to_owned(), vec!["example.com".to_owned()]);
+        values.insert("user".to_owned(), vec!["dev".to_owned()]);
+        values.insert("port".to_owned(), vec!["22".to_owned()]);
+        let snapshot = SshSnapshot {
+            source_host: "gpu-server".to_owned(),
+            values,
+            inherited_values: inherited,
+        };
+
+        let rendered = render_host(&profile(), &snapshot)?;
+        assert!(rendered.contains("IdentityFile ~/.ssh/work_key"));
+        assert!(!rendered.contains("IdentityFile ~/.ssh/id_rsa"));
+        assert!(!rendered.contains("IdentityFile ~/.ssh/id_ed25519"));
         Ok(())
     }
 }
