@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::Path;
 use std::path::PathBuf;
@@ -135,7 +136,7 @@ async fn serve_control_socket_at(
         }
     };
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
-    let _guard = SocketGuard(socket_path);
+    let _guard = SocketGuard::new(socket_path)?;
     let (completed_tx, mut completed_rx) = tokio::sync::mpsc::channel::<()>(32);
     let mut active = 0_usize;
     loop {
@@ -254,7 +255,7 @@ async fn run_agent(config: &ShimConfig, replace: bool) -> Result<()> {
     let listener = UnixListener::bind(&config.agent_socket)
         .with_context(|| format!("could not bind {}", config.agent_socket.display()))?;
     fs::set_permissions(&config.agent_socket, fs::Permissions::from_mode(0o600))?;
-    let _guard = SocketGuard(config.agent_socket.clone());
+    let _guard = SocketGuard::new(config.agent_socket.clone())?;
     let pid_path = config.agent_socket.with_extension("pid");
     write_agent_pid(&pid_path)?;
     let _pid_guard = PidFileGuard(pid_path);
@@ -654,11 +655,34 @@ fn prepare_control_socket(path: &Path) -> Result<()> {
     Ok(())
 }
 
-struct SocketGuard(PathBuf);
+struct SocketGuard {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl SocketGuard {
+    fn new(path: PathBuf) -> Result<Self> {
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("could not inspect owned socket {}", path.display()))?;
+        Ok(Self {
+            path,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let still_owned = fs::symlink_metadata(&self.path).is_ok_and(|metadata| {
+            metadata.file_type().is_socket()
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode
+        });
+        if still_owned {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -813,6 +837,22 @@ mod tests {
             find_socket_owner(&path)?.as_raw(),
             i32::try_from(std::process::id())?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn socket_guard_does_not_unlink_a_replacement_socket() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("agent.sock");
+        let first = std::os::unix::net::UnixListener::bind(&path)?;
+        let guard = SocketGuard::new(path.clone())?;
+        fs::remove_file(&path)?;
+        let replacement = std::os::unix::net::UnixListener::bind(&path)?;
+
+        drop(first);
+        drop(guard);
+        assert!(path.exists());
+        drop(replacement);
         Ok(())
     }
 
