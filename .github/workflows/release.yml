@@ -189,7 +189,7 @@ jobs:
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cxs-*
           merge-multiple: true
