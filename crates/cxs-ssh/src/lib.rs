@@ -24,16 +24,17 @@ impl SshSnapshot {
     pub fn resolve(source_host: &str) -> Result<Self> {
         validate_host_alias(source_host)?;
         let values = resolve_ssh_values(source_host)?;
-        // Resolve a name that should match only generic Host blocks. The
-        // generated alias inherits those same blocks, so only source-specific
-        // differences need to be repeated in the managed file.
-        let baseline_host = format!("cxs-inherited-probe-{}.invalid", std::process::id());
-        let inherited_values = resolve_ssh_values(&baseline_host)?;
         for required in ["hostname", "user", "port"] {
             if first_value(&values, required).is_none() {
                 bail!("ssh -G output did not include '{required}'");
             }
         }
+        // Resolve a name that should match only generic Host blocks. The
+        // generated alias inherits those same blocks, so only source-specific
+        // differences need to be repeated in the managed file. Pin the probe's
+        // connection identity to the source values so tokens such as %C expand
+        // identically without hiding a source-specific ControlPath override.
+        let inherited_values = resolve_inherited_ssh_values(&values)?;
         Ok(Self {
             source_host: source_host.to_owned(),
             values,
@@ -252,6 +253,40 @@ fn resolve_ssh_values(host: &str) -> Result<BTreeMap<String, Vec<String>>> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("ssh -G {host} failed: {}", stderr.trim());
+    }
+    let text = String::from_utf8(output.stdout).context("ssh -G returned non-UTF-8 output")?;
+    parse_ssh_g(&text)
+}
+
+fn resolve_inherited_ssh_values(
+    source_values: &BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let hostname =
+        first_value(source_values, "hostname").context("SSH snapshot has no hostname")?;
+    let user = first_value(source_values, "user").context("SSH snapshot has no user")?;
+    let port = first_value(source_values, "port").context("SSH snapshot has no port")?;
+    let mut command = Command::new("ssh");
+    command.args([
+        "-G",
+        "-o",
+        &format!("HostName={hostname}"),
+        "-o",
+        &format!("User={user}"),
+        "-o",
+        &format!("Port={port}"),
+    ]);
+    if let Some(proxy_jump) = first_value(source_values, "proxyjump")
+        && proxy_jump != "none"
+    {
+        command.args(["-o", &format!("ProxyJump={proxy_jump}")]);
+    }
+    let output = command
+        .arg("cxs-inherited-probe.invalid")
+        .output()
+        .with_context(|| "could not run inherited 'ssh -G' probe")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("inherited ssh -G probe failed: {}", stderr.trim());
     }
     let text = String::from_utf8(output.stdout).context("ssh -G returned non-UTF-8 output")?;
     parse_ssh_g(&text)
@@ -491,6 +526,46 @@ mod tests {
         assert!(rendered.contains("IdentityFile ~/.ssh/work_key"));
         assert!(!rendered.contains("IdentityFile ~/.ssh/id_rsa"));
         assert!(!rendered.contains("IdentityFile ~/.ssh/id_ed25519"));
+        Ok(())
+    }
+
+    #[test]
+    fn omits_an_inherited_control_path_with_the_same_expansion() -> Result<()> {
+        let inherited = parse_ssh_g("controlpath /tmp/probe-hash\n")?;
+        let mut values = inherited.clone();
+        values.insert("hostname".to_owned(), vec!["example.com".to_owned()]);
+        values.insert("user".to_owned(), vec!["dev".to_owned()]);
+        values.insert("port".to_owned(), vec!["22".to_owned()]);
+        let snapshot = SshSnapshot {
+            source_host: "gpu-server".to_owned(),
+            values,
+            inherited_values: inherited,
+        };
+
+        let rendered = render_host(&profile(), &snapshot)?;
+        assert!(!rendered.contains("ControlPath"));
+        Ok(())
+    }
+
+    #[test]
+    fn retains_a_source_specific_control_path() -> Result<()> {
+        let inherited = parse_ssh_g("controlpath /tmp/inherited-hash\n")?;
+        let mut values = inherited.clone();
+        values.insert(
+            "controlpath".to_owned(),
+            vec!["/tmp/source-specific".to_owned()],
+        );
+        values.insert("hostname".to_owned(), vec!["example.com".to_owned()]);
+        values.insert("user".to_owned(), vec!["dev".to_owned()]);
+        values.insert("port".to_owned(), vec!["22".to_owned()]);
+        let snapshot = SshSnapshot {
+            source_host: "gpu-server".to_owned(),
+            values,
+            inherited_values: inherited,
+        };
+
+        let rendered = render_host(&profile(), &snapshot)?;
+        assert!(rendered.contains("ControlPath /tmp/source-specific"));
         Ok(())
     }
 }
