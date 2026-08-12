@@ -915,7 +915,7 @@ async fn probe_ready_inner(
     use tokio::io::AsyncReadExt;
 
     let bootstrap_command = format!(
-        r#"mkdir -p "$HOME/.config/codex-shuttle" "{probe_control_directory}"; chmod 700 "{probe_control_directory}"; rm -f "{probe_control_socket}" "{probe_pid_file}"; CXS_CONTROL_SOCKET="{probe_control_socket}" nohup "$HOME/.local/bin/codex" -c features.code_mode_host=true app-server --listen unix:// >"$HOME/.config/codex-shuttle/probe-{}.log" 2>&1 </dev/null & probe_pid=$!; printf '%s\n' "$probe_pid" >"{probe_pid_file}"; chmod 600 "{probe_pid_file}"; probe_tries=0; while [ "$probe_tries" -lt 100 ]; do [ -S "{probe_control_socket}" ] && exit 0; kill -0 "$probe_pid" 2>/dev/null || break; probe_tries=$((probe_tries + 1)); sleep 0.1; done; cat "$HOME/.config/codex-shuttle/probe-{}.log" >&2; exit 1"#,
+        r#"mkdir -p "$HOME/.config/codex-shuttle" "{probe_control_directory}"; chmod 700 "{probe_control_directory}"; rm -f "{probe_control_socket}" "{probe_pid_file}"; probe_token="cxs-probe-$$-$(date +%s)"; CXS_PROBE_TOKEN="$probe_token" CXS_CONTROL_SOCKET="{probe_control_socket}" nohup "$HOME/.local/bin/codex" -c features.code_mode_host=true app-server --listen unix:// >"$HOME/.config/codex-shuttle/probe-{}.log" 2>&1 </dev/null & probe_pid=$!; printf '%s %s\n' "$probe_pid" "$probe_token" >"{probe_pid_file}"; chmod 600 "{probe_pid_file}"; probe_tries=0; while [ "$probe_tries" -lt 100 ]; do [ -S "{probe_control_socket}" ] && exit 0; kill -0 "$probe_pid" 2>/dev/null || break; probe_tries=$((probe_tries + 1)); sleep 0.1; done; cat "$HOME/.config/codex-shuttle/probe-{}.log" >&2; exit 1"#,
         profile.name, profile.name
     );
     let bootstrap = tokio::time::timeout(
@@ -1136,7 +1136,7 @@ async fn cleanup_remote_probe(
     probe_pid_file: &str,
 ) -> Result<()> {
     let cleanup_command = format!(
-        r#"probe_pid=''; if [ -f "{probe_pid_file}" ]; then probe_pid=$(cat "{probe_pid_file}" 2>/dev/null || true); fi; case "$probe_pid" in ''|*[!0-9]*) ;; *) kill -TERM "$probe_pid" 2>/dev/null || true; cleanup_tries=0; while kill -0 "$probe_pid" 2>/dev/null && [ "$cleanup_tries" -lt 20 ]; do cleanup_tries=$((cleanup_tries + 1)); sleep 0.1; done; if kill -0 "$probe_pid" 2>/dev/null; then kill -KILL "$probe_pid" 2>/dev/null || true; fi ;; esac; rm -f "{probe_control_socket}" "{probe_pid_file}"; rmdir "{probe_control_directory}" 2>/dev/null || true"#
+        r#"probe_pid=''; probe_token=''; if [ -f "{probe_pid_file}" ]; then read -r probe_pid probe_token <"{probe_pid_file}" || true; fi; probe_owned=false; case "$probe_pid" in ''|*[!0-9]*) ;; *) case "$probe_token" in ''|*[!0-9A-Za-z_-]*) ;; *) if [ -r "/proc/$probe_pid/environ" ] && tr '\000' '\n' <"/proc/$probe_pid/environ" | grep -Fqx "CXS_PROBE_TOKEN=$probe_token"; then probe_owned=true; fi ;; esac ;; esac; if [ "$probe_owned" = true ]; then kill -TERM "$probe_pid" 2>/dev/null || true; cleanup_tries=0; while kill -0 "$probe_pid" 2>/dev/null && [ "$cleanup_tries" -lt 20 ]; do cleanup_tries=$((cleanup_tries + 1)); sleep 0.1; done; if kill -0 "$probe_pid" 2>/dev/null && [ -r "/proc/$probe_pid/environ" ] && tr '\000' '\n' <"/proc/$probe_pid/environ" | grep -Fqx "CXS_PROBE_TOKEN=$probe_token"; then kill -KILL "$probe_pid" 2>/dev/null || true; fi; fi; rm -f "{probe_control_socket}" "{probe_pid_file}"; rmdir "{probe_control_directory}" 2>/dev/null || true"#
     );
     let status = tokio::time::timeout(
         Duration::from_secs(10),
