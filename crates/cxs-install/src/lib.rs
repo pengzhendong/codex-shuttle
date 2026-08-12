@@ -197,10 +197,12 @@ pub fn install(
 
     let root = format!("{}/.local/lib/codex-shuttle", facts.home);
     let reusable = if let Some(remote_codex) = options.remote_codex.as_deref() {
+        let source_version = format!("codex-cli {version}");
         Some(validate_remote_executor(
             profile,
             &root,
             &profile.codex_version,
+            &source_version,
             remote_codex,
         )?)
     } else {
@@ -345,8 +347,7 @@ pub fn install(
         layout_version: REMOTE_LAYOUT_VERSION,
         profile: profile.name.clone(),
         codex_version: profile.codex_version.clone(),
-        runtime_version: (executor_source == ExecutorSource::ManagedRuntime)
-            .then(|| format!("codex-cli {version}")),
+        runtime_version: Some(format!("codex-cli {version}")),
         target: target.to_owned(),
         package_sha256: package_sha256.clone(),
         shim_sha256: shim_sha256.clone(),
@@ -480,12 +481,14 @@ fn validate_remote_executor(
     profile: &Profile,
     root: &str,
     expected_version: &str,
+    expected_source_version: &str,
     path: &str,
 ) -> Result<ReusableExecutor> {
     if !path.starts_with('/') || path.contains(['\n', '\r', '\0']) {
         bail!("--remote-codex must be an absolute remote path without control characters");
     }
-    let script = render_remote_executor_probe_script(root, expected_version, path);
+    let script =
+        render_remote_executor_probe_script(root, expected_version, expected_source_version, path);
     let mut child = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", &profile.source_host, "sh -s"])
         .stdin(Stdio::piped())
@@ -516,11 +519,17 @@ fn validate_remote_executor(
     parse_reusable_executor(&output.stdout)
 }
 
-fn render_remote_executor_probe_script(root: &str, expected_version: &str, path: &str) -> String {
+fn render_remote_executor_probe_script(
+    root: &str,
+    expected_version: &str,
+    expected_source_version: &str,
+    path: &str,
+) -> String {
     format!(
         r#"set -eu
 root={root}
 expected={expected}
+expected_source={expected_source}
 candidate={path}
 managed="$root/current/cxs-shim"
 managed_resolved=$(readlink -f "$managed" 2>/dev/null || printf '%s' "$managed")
@@ -528,7 +537,7 @@ test -x "$candidate" || exit 42
 resolved=$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")
 test "$resolved" != "$managed_resolved" || exit 42
 actual=$("$candidate" --version 2>/dev/null || true)
-test "$actual" = "$expected" || exit 42
+test "$actual" = "$expected" || test "$actual" = "$expected_source" || exit 42
 "$candidate" exec-server --help >/dev/null 2>&1 || exit 42
 digest=$(sha256sum "$resolved" | awk '{{print $1}}')
 installed="$resolved"
@@ -539,6 +548,7 @@ printf '%s\n%s\n%s\n' "$resolved" "$installed" "$digest"
 "#,
         root = shell_quote(root),
         expected = shell_quote(expected_version),
+        expected_source = shell_quote(expected_source_version),
         path = shell_quote(path),
     )
 }
@@ -826,7 +836,7 @@ fn ssh_output(host: &str, command: &str) -> Result<Vec<u8>> {
 fn render_install_script(
     profile: &str,
     token: &str,
-    _codex_version: &str,
+    codex_version: &str,
     executor_version: &str,
     root: &str,
     release_name: &str,
@@ -857,6 +867,7 @@ umask 077
 profile={profile}
 token={token}
 expected_version={executor_version}
+expected_profile_version={codex_version}
 root={root}
 release="$root/releases/{release_name}"
 stage="$root/.stage-{release_name}"
@@ -880,7 +891,7 @@ mkdir "$stage"
 {prepare_executor}
 install -m 0700 "$shim" "$stage/cxs-shim"
 actual_version=$("$executor_probe" --version)
-test "$actual_version" = "$expected_version" || {{ echo "Codex package version mismatch: $actual_version" >&2; exit 1; }}
+test "$actual_version" = "$expected_version" || test "$actual_version" = "$expected_profile_version" || {{ echo "Codex package version mismatch: $actual_version" >&2; exit 1; }}
 "$executor_probe" exec-server --help >/dev/null 2>&1 || {{ echo "Codex executor has no exec-server command" >&2; exit 1; }}
 cat > "$stage/shim.json" <<'CXS_CONFIG'
 {config_json}
@@ -900,7 +911,7 @@ if test -L "$root/current"; then
       old_executor="$old/bin/codex"
     elif test -x "$old/cxs-shim" && test -f "$old/shim.json"; then
       old_version=$(CXS_SHIM_CONFIG="$old/shim.json" "$old/cxs-shim" --version 2>/dev/null || true)
-      if test "$old_version" = "$expected_version" && test -x "$executor_installed"; then
+      if (test "$old_version" = "$expected_version" || test "$old_version" = "$expected_profile_version") && test -x "$executor_installed"; then
         old_executor="$executor_installed"
       fi
     fi
@@ -945,6 +956,7 @@ test -x "$executor_installed" || {{ echo "configured Codex executor is not execu
 "#,
         profile = shell_quote(profile),
         token = shell_quote(token),
+        codex_version = shell_quote(codex_version),
         executor_version = shell_quote(executor_version),
         root = shell_quote(root),
         release_name = release_name,
@@ -1201,6 +1213,47 @@ mod tests {
         );
         assert!(!root.join("current/bin/codex").exists());
         assert!(executor.is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn install_script_accepts_source_version_for_desktop_prerelease() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let home = directory.path().join("home");
+        let executor = directory.path().join("cxs-runtime");
+        fs::write(
+            &executor,
+            "#!/bin/sh\ncase \"$1\" in --version) printf 'codex-cli 0.147.0\\n' ;; exec-server) exit 0 ;; esac\n",
+        )?;
+        fs::set_permissions(&executor, fs::Permissions::from_mode(0o700))?;
+        let shim = directory.path().join("cxs-shim");
+        fs::write(&shim, "#!/bin/sh\nexit 0\n")?;
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o700))?;
+        let root = home.join(".local/lib/codex-shuttle");
+        let script = render_install_script(
+            "gpu",
+            &"a".repeat(64),
+            "codex-cli 0.147.0-alpha.6.5",
+            "codex-cli 0.147.0",
+            root.to_str().unwrap(),
+            "codex-0.147.0-prerelease-reuse",
+            None,
+            executor.to_str().unwrap(),
+            executor.to_str().unwrap(),
+            shim.to_str().unwrap(),
+            "{\"profile\":\"gpu\"}",
+            "{\"profile\":\"gpu\"}",
+        );
+        let output = Command::new("sh")
+            .env("HOME", &home)
+            .arg("-c")
+            .arg(script)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         Ok(())
     }
 

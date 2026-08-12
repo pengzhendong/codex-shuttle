@@ -21,6 +21,7 @@ use cxs_ssh::{
     test_connection,
 };
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -66,35 +67,38 @@ enum Commands {
         profile: String,
         #[arg(long)]
         offline: bool,
+        /// Print a machine-readable diagnostic report.
+        #[arg(long)]
+        json: bool,
     },
     /// Install matching Codex executor and the Shuttle shim on the remote host.
     Install {
         profile: String,
         /// Use a locally built cxs-runtime package.
-        #[arg(long, conflicts_with_all = ["remote_codex", "local_download"])]
+        #[arg(long, hide = true, conflicts_with_all = ["remote_codex", "local_download"])]
         runtime_package: Option<PathBuf>,
         /// Download the runtime on this Mac, then upload it over SSH.
         #[arg(long, conflicts_with_all = ["remote_codex", "runtime_package"])]
         local_download: bool,
         /// Reuse this existing Codex executable on the remote host.
-        #[arg(long, conflicts_with_all = ["runtime_package", "local_download"])]
+        #[arg(long, hide = true, conflicts_with_all = ["runtime_package", "local_download"])]
         remote_codex: Option<String>,
         /// Use a local Linux cxs-shim binary instead of downloading it.
-        #[arg(long)]
+        #[arg(long, hide = true)]
         shim: Option<PathBuf>,
     },
     /// Install artifacts matching the desktop-bundled Codex version.
     Update {
         profile: String,
-        #[arg(long, conflicts_with_all = ["remote_codex", "local_download"])]
+        #[arg(long, hide = true, conflicts_with_all = ["remote_codex", "local_download"])]
         runtime_package: Option<PathBuf>,
         /// Download the runtime on this Mac, then upload it over SSH.
         #[arg(long, conflicts_with_all = ["remote_codex", "runtime_package"])]
         local_download: bool,
         /// Reuse this existing Codex executable on the remote host.
-        #[arg(long, conflicts_with_all = ["runtime_package", "local_download"])]
+        #[arg(long, hide = true, conflicts_with_all = ["runtime_package", "local_download"])]
         remote_codex: Option<String>,
-        #[arg(long)]
+        #[arg(long, hide = true)]
         shim: Option<PathBuf>,
     },
     /// Switch to the previous release and verify it end to end.
@@ -162,9 +166,13 @@ async fn main() -> Result<()> {
             let _lock = store.lock_profile(&profile, OperationLockMode::Shared)?;
             status(&store, &profile)
         }
-        Commands::Doctor { profile, offline } => {
+        Commands::Doctor {
+            profile,
+            offline,
+            json,
+        } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Shared)?;
-            doctor(&store, &profile, desktop_codex_path(), offline).await
+            doctor(&store, &profile, desktop_codex_path(), offline, json).await
         }
         Commands::Install {
             profile,
@@ -360,12 +368,57 @@ fn status(store: &ProfileStore, name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn doctor(store: &ProfileStore, name: &str, codex: &Path, offline: bool) -> Result<()> {
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    profile: String,
+    ready: bool,
+    checks: Vec<DoctorCheck>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorCheck {
+    name: String,
+    status: &'static str,
+    detail: String,
+}
+
+impl DoctorCheck {
+    fn from_result(name: &str, result: Result<String>) -> Self {
+        match result {
+            Ok(detail) => Self {
+                name: name.to_owned(),
+                status: "pass",
+                detail,
+            },
+            Err(error) => Self {
+                name: name.to_owned(),
+                status: "fail",
+                detail: error.to_string(),
+            },
+        }
+    }
+
+    fn skip(name: &str, detail: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            status: "skip",
+            detail: detail.to_owned(),
+        }
+    }
+}
+
+async fn doctor(
+    store: &ProfileStore,
+    name: &str,
+    codex: &Path,
+    offline: bool,
+    json: bool,
+) -> Result<()> {
     let profile = store.load(name)?;
     let snapshot = SshSnapshot::load(&store.paths().profile_dir(name))?;
-    let mut failed = false;
+    let mut checks = Vec::new();
 
-    print_result(
+    checks.push(DoctorCheck::from_result(
         "profile-state",
         if profile.status == ProfileStatus::Ready {
             Ok("profile contract suite has passed".to_owned())
@@ -375,33 +428,29 @@ async fn doctor(store: &ProfileStore, name: &str, codex: &Path, offline: bool) -
                 profile.status
             ))
         },
-        &mut failed,
-    );
-    print_result(
+    ));
+    checks.push(DoctorCheck::from_result(
         "local-bridge",
         if bridge_running(store, name)? {
             Ok("background bridge is running".to_owned())
         } else {
             Err(anyhow::anyhow!("bridge is stopped; run 'cxs up {name}'"))
         },
-        &mut failed,
-    );
+    ));
     let token_check = store
         .read_token(&profile)
         .map(|_| "private profile token is valid".to_owned());
-    print_result("profile-token", token_check, &mut failed);
+    checks.push(DoctorCheck::from_result("profile-token", token_check));
 
     for check in local_codex_checks(codex) {
-        failed |= !check.passed;
-        println!(
-            "{:<5} {:<24} {}",
-            mark(check.passed),
-            check.name,
-            check.detail
-        );
+        checks.push(DoctorCheck {
+            name: check.name,
+            status: if check.passed { "pass" } else { "fail" },
+            detail: check.detail,
+        });
     }
     let current_version = codex_version(codex);
-    print_result(
+    checks.push(DoctorCheck::from_result(
         "version-match",
         current_version.and_then(|current| {
             if current == profile.codex_version {
@@ -410,10 +459,9 @@ async fn doctor(store: &ProfileStore, name: &str, codex: &Path, offline: bool) -
                 bail!("profile={} current={current}", profile.codex_version)
             }
         }),
-        &mut failed,
-    );
+    ));
 
-    print_result(
+    checks.push(DoctorCheck::from_result(
         "ssh-config",
         SshSnapshot::resolve(&profile.source_host).and_then(|current| {
             if current == snapshot {
@@ -422,29 +470,53 @@ async fn doctor(store: &ProfileStore, name: &str, codex: &Path, offline: bool) -
                 bail!("source SSH configuration changed; recreate the profile")
             }
         }),
-        &mut failed,
-    );
+    ));
 
     if offline {
-        println!("SKIP  {:<24} offline mode", "ssh-connection");
-        println!("SKIP  {:<24} offline mode", "remote-platform");
+        for name in [
+            "ssh-connection",
+            "remote-platform",
+            "remote-install",
+            "ssh-agent-alias",
+            "execution-transport",
+        ] {
+            checks.push(DoctorCheck::skip(name, "offline mode"));
+        }
     } else {
-        doctor_remote(&profile, &mut failed).await;
+        checks.extend(doctor_remote(&profile).await);
     }
 
-    if failed {
+    let ready = checks.iter().all(|check| check.status != "fail");
+    let report = DoctorReport {
+        profile: name.to_owned(),
+        ready,
+        checks,
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        for check in &report.checks {
+            println!(
+                "{:<5} {:<24} {}",
+                check.status.to_ascii_uppercase(),
+                check.name,
+                check.detail
+            );
+        }
+    }
+    if !ready {
         bail!("profile '{name}' is not ready");
     }
     Ok(())
 }
 
-async fn doctor_remote(profile: &Profile, failed: &mut bool) {
-    print_result(
+async fn doctor_remote(profile: &Profile) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    checks.push(DoctorCheck::from_result(
         "ssh-connection",
         test_connection(&profile.source_host).map(|()| "non-interactive SSH succeeded".to_owned()),
-        failed,
-    );
-    print_result(
+    ));
+    checks.push(DoctorCheck::from_result(
         "remote-platform",
         query_remote(&profile.source_host).and_then(|facts| {
             if facts.kernel != "Linux" {
@@ -458,9 +530,8 @@ async fn doctor_remote(profile: &Profile, failed: &mut bool) {
                 facts.kernel, facts.arch, facts.home
             ))
         }),
-        failed,
-    );
-    print_result(
+    ));
+    checks.push(DoctorCheck::from_result(
         "remote-install",
         cxs_install::inspect(profile).and_then(|remote| {
             verify_remote_metadata(profile, &remote)?;
@@ -470,21 +541,19 @@ async fn doctor_remote(profile: &Profile, failed: &mut bool) {
                 .map_or_else(|| "legacy-package".to_owned(), |source| source.to_string());
             Ok(format!("{} ({}, {source})", remote.release, remote.target))
         }),
-        failed,
-    );
-    print_result(
+    ));
+    checks.push(DoctorCheck::from_result(
         "ssh-agent-alias",
         test_connection(&profile.app_alias)
             .map(|()| "generated alias accepts ordinary SSH commands".to_owned()),
-        failed,
-    );
-    print_result(
+    ));
+    checks.push(DoctorCheck::from_result(
         "execution-transport",
         probe_ready(profile).await.map(|()| {
             "environment ready; remote filesystem and command execution passed".to_owned()
         }),
-        failed,
-    );
+    ));
+    checks
 }
 
 fn config(store: &ProfileStore, name: &str) -> Result<()> {
@@ -1206,18 +1275,4 @@ fn rewrite_all_ssh_config(store: &ProfileStore) -> Result<()> {
         entries.push((profile, snapshot));
     }
     rewrite_managed_config(&store.paths().managed_ssh_config, &entries)
-}
-
-fn print_result(name: &str, result: Result<String>, failed: &mut bool) {
-    match result {
-        Ok(detail) => println!("PASS  {name:<24} {detail}"),
-        Err(error) => {
-            *failed = true;
-            println!("FAIL  {name:<24} {error}");
-        }
-    }
-}
-
-const fn mark(passed: bool) -> &'static str {
-    if passed { "PASS" } else { "FAIL" }
 }

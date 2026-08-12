@@ -92,7 +92,7 @@ cxs install devbox --local-download
 | `cxs install <profile>` | 安装匹配的远程 runtime 和 shim |
 | `cxs update <profile>` | 按当前本地 Codex 更新远程组件 |
 | `cxs up <profile>` / `cxs down <profile>` | 启动或停止本地桥接器 |
-| `cxs doctor <profile>` | 检查 Codex、SSH、runtime、远程文件与 Linux 命令执行 |
+| `cxs doctor <profile> [--json]` | 检查 Codex、SSH、runtime、远程文件与 Linux 命令执行；可输出 JSON |
 | `cxs list` / `cxs status <profile>` | 查看配置和状态 |
 | `cxs config <profile>` | 输出生成的 SSH Host 配置 |
 | `cxs rollback <profile>` | 回退到上一份远程 Release |
@@ -100,7 +100,7 @@ cxs install devbox --local-download
 | `cxs repair` | 备份并修复本地 Provider/session 元数据 |
 | `cxs remove <profile> [--remote]` | 删除本地状态，并可选删除远程 Shuttle 状态 |
 
-所有选项可通过 `cxs <command> --help` 查看。
+面向用户的选项可通过 `cxs <command> --help` 查看。开发用的本地产物覆盖参数仍然可用，但不再显示在普通帮助中。
 
 ## Session 同步
 

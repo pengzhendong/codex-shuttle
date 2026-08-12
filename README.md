@@ -92,7 +92,7 @@ cxs install devbox --local-download
 | `cxs install <profile>` | Install the matching remote runtime and shim |
 | `cxs update <profile>` | Update artifacts for the current local Codex |
 | `cxs up <profile>` / `cxs down <profile>` | Start or stop the local bridge |
-| `cxs doctor <profile>` | Verify Codex, SSH, runtime, remote filesystem, and Linux command execution |
+| `cxs doctor <profile> [--json]` | Verify Codex, SSH, runtime, remote filesystem, and Linux command execution |
 | `cxs list` / `cxs status <profile>` | Inspect configured profiles |
 | `cxs config <profile>` | Print the generated SSH host block |
 | `cxs rollback <profile>` | Switch back to the previous remote release |
@@ -100,7 +100,7 @@ cxs install devbox --local-download
 | `cxs repair` | Back up and repair local Provider/session metadata |
 | `cxs remove <profile> [--remote]` | Remove local state and optionally remote Shuttle state |
 
-Run `cxs <command> --help` for all options, including local runtime packages and explicit remote-executor overrides.
+Run `cxs <command> --help` for user-facing options. Development-only artifact overrides remain supported but are intentionally hidden from the normal help output.
 
 ## Session sync
 
