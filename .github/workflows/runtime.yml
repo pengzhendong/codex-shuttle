@@ -71,6 +71,8 @@ jobs:
         with:
           name: cxs-runtime-${{ matrix.target }}
           path: runtime-artifacts/*.tar.gz
+          retention-days: 1
+          compression-level: 0
 
   runtime:
     if: (inputs.reuse_release_tag || github.event.inputs.reuse_release_tag || '') == ''
@@ -100,11 +102,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ${{ runner.temp }}/cxs-runtime-target-${{ matrix.target }}
-          key: cxs-runtime-v2-${{ matrix.target }}-${{ inputs.codex_version }}-${{ hashFiles('runtime/cxs-runtime/**', 'scripts/build-cxs-runtime.sh') }}
-          restore-keys: |
-            cxs-runtime-v2-${{ matrix.target }}-${{ inputs.codex_version }}-
-            cxs-runtime-v2-${{ matrix.target }}-
+          key: cxs-runtime-deps-v1-${{ matrix.target }}-${{ hashFiles('runtime/cxs-runtime/Cargo.toml') }}
       - name: Build runtime package
         env:
           CXS_RUNTIME_CARGO: cargo-zigbuild
@@ -113,6 +111,8 @@ jobs:
         with:
           name: cxs-runtime-${{ matrix.target }}
           path: runtime-artifacts/*.tar.gz
+          retention-days: 1
+          compression-level: 0
       - name: Smoke-test runtime package
         run: |
           case "${{ matrix.target }}" in

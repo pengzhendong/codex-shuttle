@@ -152,6 +152,17 @@ jobs:
             echo "No compatible verified runtime Release was found; the runtime will be built."
           fi
           echo "release-tag=$runtime_release_tag" >> "$GITHUB_OUTPUT"
+      - name: Create artifact storage probe
+        if: steps.version.outputs.should-publish == 'true'
+        run: printf 'release artifact storage is available\n' > release-storage-probe.txt
+      - name: Verify artifact storage capacity
+        if: steps.version.outputs.should-publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-storage-probe
+          path: release-storage-probe.txt
+          retention-days: 1
+          compression-level: 0
 
   quality:
     needs: prepare
@@ -198,6 +209,7 @@ jobs:
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
+          retention-days: 1
 
   linux-shim:
     needs: prepare
@@ -234,6 +246,7 @@ jobs:
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
+          retention-days: 1
 
   linux-runtime:
     needs: prepare
@@ -253,7 +266,8 @@ jobs:
           pattern: cxs-*
           merge-multiple: true
       - run: sha256sum cxs-* > SHA256SUMS
-      - uses: softprops/action-gh-release@v3
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.release-tag }}
           target_commitish: ${{ github.sha }}
@@ -287,3 +301,17 @@ jobs:
             cxs-runtime-*
             cxs-shim-*
             SHA256SUMS
+      - name: Delete published staging artifacts
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[].id' |
+          while read -r artifact_id; do
+            test -n "$artifact_id" || continue
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+          done
