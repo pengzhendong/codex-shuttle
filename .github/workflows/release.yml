@@ -27,7 +27,7 @@ jobs:
       codex-version: ${{ steps.version.outputs.codex-version }}
       release-tag: ${{ steps.version.outputs.release-tag }}
       runtime-release-tag: ${{ steps.runtime.outputs.release-tag }}
-      should-publish: ${{ steps.version.outputs.should-publish }}
+      should-publish: ${{ steps.version.outputs.should-publish == 'true' && steps.storage_probe.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v7
       - id: version
@@ -156,7 +156,9 @@ jobs:
         if: steps.version.outputs.should-publish == 'true'
         run: printf 'release artifact storage is available\n' > release-storage-probe.txt
       - name: Verify artifact storage capacity
+        id: storage_probe
         if: steps.version.outputs.should-publish == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: release-storage-probe
