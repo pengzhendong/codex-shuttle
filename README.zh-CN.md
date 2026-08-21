@@ -30,7 +30,7 @@ Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux SSH 主机
 - **精简远程运行时**：只安装版本匹配的 App Server/Exec Server，不安装完整 CLI/TUI。
 - **单条 SSH 连接**：Yamux 在一条 SSH stdin/stdout 上承载 App、Exec、Host 三类通道。
 - **会话迁移**：把服务器创建的 session 拉回 Mac，并修复 Provider 导致的不可见问题。
-- **版本绑定发布**：每小时检测官方稳定源码版本，同时永久保留旧版 Release。
+- **版本绑定发布**：每天检测官方稳定源码版本，同时永久保留旧版 Release。
 
 ## 环境要求
 
@@ -142,7 +142,7 @@ Mac App Server 仍然负责会话和账号状态。Shuttle 注册 Linux 执行�
 
 ## 发布与兼容性
 
-GitHub Actions 每小时检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。只有 workspace 测试、两种 Mac CLI、两种 Linux shim 和两种 Linux runtime 烟测全部通过，才会发布绑定版本的 Shuttle Release。这些门禁证明构建兼容；针对具体 Mac 和服务器的端到端检查仍以 `cxs doctor` 为准。构建失败不会生成半成品，并会在下一轮自动重试。
+GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。只有 workspace 测试、两种 Mac CLI、两种 Linux shim 和两种 Linux runtime 烟测全部通过，才会发布绑定版本的 Shuttle Release。这些门禁证明构建兼容；针对具体 Mac 和服务器的端到端检查仍以 `cxs doctor` 为准。构建失败不会生成半成品，并会在下一轮自动重试。
 
 每个已发布的 Mac CLI 都内置完整 Release 标签，只从同一份不可变 Release 下载 shim/runtime。详见 [Runtime 发布流程](docs/runtime-release.md)和[兼容性说明](docs/compatibility.md)。
 

@@ -30,7 +30,7 @@ It uses your existing OpenSSH configuration and one ordinary SSH stdio connectio
 - **Small remote runtime** — install only the version-matched App Server/Exec Server runtime, not the full Codex CLI/TUI.
 - **One SSH connection** — Yamux carries App, Exec, and Host channels over a single SSH stdin/stdout stream.
 - **Session migration** — pull server-created sessions to the Mac and repair Provider visibility metadata.
-- **Version-bound releases** — new stable OpenAI Codex source tags are checked hourly; old Shuttle releases remain available.
+- **Version-bound releases** — new stable OpenAI Codex source tags are checked daily; old Shuttle releases remain available.
 
 ## Requirements
 
@@ -142,7 +142,7 @@ Read [Architecture](docs/architecture.md) for protocol details and [Dependency b
 
 ## Releases and compatibility
 
-GitHub Actions checks for stable OpenAI `rust-vX.Y.Z` tags every hour and
+GitHub Actions checks for stable OpenAI `rust-vX.Y.Z` tags daily at 00:17 UTC and
 processes every unpublished version in order. A version-bound Shuttle release
 is published only after workspace tests, both Mac builds, both Linux shims, and
 both Linux runtime smoke tests succeed. These gates prove build compatibility;
