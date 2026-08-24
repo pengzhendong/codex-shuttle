@@ -28,7 +28,7 @@ jobs:
       codex-version: ${{ steps.version.outputs.codex-version }}
       release-tag: ${{ steps.version.outputs.release-tag }}
       runtime-release-tag: ${{ steps.runtime.outputs.release-tag }}
-      should-publish: ${{ steps.version.outputs.should-publish == 'true' && steps.storage_probe.outcome == 'success' }}
+      should-publish: ${{ steps.version.outputs.should-publish }}
     steps:
       - uses: actions/checkout@v7
       - id: version
@@ -153,22 +153,37 @@ jobs:
             echo "No compatible verified runtime Release was found; the runtime will be built."
           fi
           echo "release-tag=$runtime_release_tag" >> "$GITHUB_OUTPUT"
-      - name: Create artifact storage probe
-        if: steps.version.outputs.should-publish == 'true'
-        run: printf 'release artifact storage is available\n' > release-storage-probe.txt
-      - name: Verify artifact storage capacity
-        id: storage_probe
-        if: steps.version.outputs.should-publish == 'true'
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
+  cache-transport-save:
+    needs: prepare
+    if: needs.prepare.outputs.should-publish == 'true'
+    runs-on: macos-14
+    steps:
+      - name: Create cross-platform cache probe
+        run: |
+          mkdir -p release-staging
+          printf 'codex-shuttle-release-cache\n' > release-staging/cache-transport-probe
+      - uses: actions/cache/save@v5
         with:
-          name: release-storage-probe
-          path: release-storage-probe.txt
-          retention-days: 1
-          compression-level: 0
+          path: release-staging/cache-transport-probe
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-transport-probe
+          enableCrossOsArchive: true
+
+  cache-transport-verify:
+    needs: [prepare, cache-transport-save]
+    if: needs.prepare.outputs.should-publish == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cache-transport-probe
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-transport-probe
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - name: Verify cross-platform cache transport
+        run: test "$(cat release-staging/cache-transport-probe)" = codex-shuttle-release-cache
 
   quality:
-    needs: prepare
+    needs: [prepare, cache-transport-verify]
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -185,7 +200,7 @@ jobs:
       - run: cargo test --locked --workspace
 
   mac-cli:
-    needs: prepare
+    needs: [prepare, cache-transport-verify]
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       matrix:
@@ -207,15 +222,17 @@ jobs:
       - run: cargo build --locked --release -p cxs-cli --target ${{ matrix.target }}
         env:
           CXS_RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
-      - run: cp target/${{ matrix.target }}/release/cxs ${{ matrix.asset }}
-      - uses: actions/upload-artifact@v7
+      - run: |
+          mkdir -p release-staging
+          cp target/${{ matrix.target }}/release/cxs release-staging/${{ matrix.asset }}
+      - uses: actions/cache/save@v5
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
-          retention-days: 1
+          path: release-staging/${{ matrix.asset }}
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
+          enableCrossOsArchive: true
 
   linux-shim:
-    needs: prepare
+    needs: [prepare, cache-transport-verify]
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       matrix:
@@ -244,15 +261,17 @@ jobs:
           shared-key: linux-shim-${{ matrix.target }}
           add-job-id-key: false
       - run: cargo zigbuild --locked --release -p cxs-shim --target ${{ matrix.target }}
-      - run: cp target/${{ matrix.target }}/release/cxs-shim ${{ matrix.asset }}
-      - uses: actions/upload-artifact@v7
+      - run: |
+          mkdir -p release-staging
+          cp target/${{ matrix.target }}/release/cxs-shim release-staging/${{ matrix.asset }}
+      - uses: actions/cache/save@v5
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
-          retention-days: 1
+          path: release-staging/${{ matrix.asset }}
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
+          enableCrossOsArchive: true
 
   linux-runtime:
-    needs: prepare
+    needs: [prepare, cache-transport-verify]
     if: needs.prepare.outputs.should-publish == 'true'
     uses: ./.github/workflows/runtime.yml
     with:
@@ -264,11 +283,43 @@ jobs:
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/cache/restore@v5
         with:
-          pattern: cxs-*
-          merge-multiple: true
-      - run: sha256sum cxs-* > SHA256SUMS
+          path: release-staging/cxs-cli-macos-aarch64
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-macos-aarch64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-cli-macos-x86_64
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-macos-x86_64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-shim-linux-aarch64
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-linux-aarch64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-shim-linux-x86_64
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-linux-x86_64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - run: (cd release-staging && sha256sum cxs-* > SHA256SUMS)
       - name: Publish release assets
         uses: softprops/action-gh-release@v3
         with:
@@ -300,21 +351,26 @@ jobs:
             See the [installation guide](https://github.com/${{ github.repository }}#installation) for the recommended setup.
           generate_release_notes: true
           files: |
-            cxs-cli-*
-            cxs-runtime-*
-            cxs-shim-*
-            SHA256SUMS
-      - name: Delete published staging artifacts
+            release-staging/cxs-cli-*
+            release-staging/cxs-runtime-*
+            release-staging/cxs-shim-*
+            release-staging/SHA256SUMS
+      - name: Delete published staging caches
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          cache_prefix="cxs-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
           gh api --paginate \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
-            --jq '.artifacts[].id' |
-          while read -r artifact_id; do
-            test -n "$artifact_id" || continue
+            "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | [.id, .key] | @tsv' |
+          while IFS=$'\t' read -r cache_id cache_key; do
+            test -n "$cache_id" || continue
+            case "$cache_key" in
+              "$cache_prefix"*) ;;
+              *) continue ;;
+            esac
             gh api --method DELETE \
-              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+              "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}"
           done
