@@ -22,6 +22,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: read
 
 env:
@@ -32,9 +33,11 @@ jobs:
     if: (inputs.reuse_release_tag || github.event.inputs.reuse_release_tag || '') != ''
     strategy:
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            arch: aarch64
     runs-on: ubuntu-24.04
     steps:
       - name: Download previous runtime package
@@ -67,12 +70,13 @@ jobs:
           if test "$downloaded_name" != "$runtime_name"; then
             mv "runtime-artifacts/$downloaded_name" "runtime-artifacts/$runtime_name"
           fi
-      - uses: actions/upload-artifact@v7
+          mkdir -p release-staging
+          cp "runtime-artifacts/$runtime_name" "release-staging/$runtime_name"
+      - uses: actions/cache/save@v5
         with:
-          name: cxs-runtime-${{ matrix.target }}
-          path: runtime-artifacts/*.tar.gz
-          retention-days: 1
-          compression-level: 0
+          path: release-staging/cxs-runtime-linux-${{ matrix.arch }}-codex-${{ inputs.codex_version }}.tar.gz
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-runtime-linux-${{ matrix.arch }}-codex-${{ inputs.codex_version }}.tar.gz
+          enableCrossOsArchive: true
 
   runtime:
     if: (inputs.reuse_release_tag || github.event.inputs.reuse_release_tag || '') == ''
@@ -81,8 +85,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
+            arch: x86_64
             runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
+            arch: aarch64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -107,12 +113,6 @@ jobs:
         env:
           CXS_RUNTIME_CARGO: cargo-zigbuild
         run: scripts/build-cxs-runtime.sh "${{ inputs.codex_version }}" "${{ matrix.target }}" runtime-artifacts
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cxs-runtime-${{ matrix.target }}
-          path: runtime-artifacts/*.tar.gz
-          retention-days: 1
-          compression-level: 0
       - name: Smoke-test runtime package
         run: |
           case "${{ matrix.target }}" in
@@ -125,3 +125,12 @@ jobs:
           runtime-smoke/bin/cxs-runtime exec-server --help >/dev/null
           runtime-smoke/codex-path/rg --version >/dev/null
           runtime-smoke/codex-resources/bwrap --help >/dev/null
+      - name: Stage runtime package
+        run: |
+          mkdir -p release-staging
+          cp runtime-artifacts/cxs-runtime-linux-${{ matrix.arch }}-codex-${{ inputs.codex_version }}.tar.gz release-staging/
+      - uses: actions/cache/save@v5
+        with:
+          path: release-staging/cxs-runtime-linux-${{ matrix.arch }}-codex-${{ inputs.codex_version }}.tar.gz
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-runtime-linux-${{ matrix.arch }}-codex-${{ inputs.codex_version }}.tar.gz
+          enableCrossOsArchive: true
