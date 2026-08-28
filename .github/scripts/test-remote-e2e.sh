@@ -103,6 +103,10 @@ sshd_launcher=$!
 cleanup() {
   exit_code=$?
   "$cxs" down "$profile" >/dev/null 2>&1 || true
+  if test "$exit_code" -ne 0; then
+    echo "bridge diagnostic:" >&2
+    sed -n '1,240p' "$HOME/.local/state/codex-shuttle/profiles/$profile/bridge.log" >&2 || true
+  fi
   "$cxs" remove "$profile" --remote --purge >/dev/null 2>&1 || true
   if test -f "$ssh_dir/sshd.pid"; then
     sudo kill "$(cat "$ssh_dir/sshd.pid")" >/dev/null 2>&1 || true

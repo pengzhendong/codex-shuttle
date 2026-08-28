@@ -585,7 +585,7 @@ mod unix {
     #[cfg(target_os = "macos")]
     fn validate_agent_process(pid: Pid) -> Result<()> {
         let output = std::process::Command::new("/bin/ps")
-            .args(["-p", &pid.as_raw().to_string(), "-o", "args="])
+            .args(["-ww", "-p", &pid.as_raw().to_string(), "-o", "args="])
             .output()
             .context("could not inspect the active cxs-agent process")?;
         let command = String::from_utf8_lossy(&output.stdout);
