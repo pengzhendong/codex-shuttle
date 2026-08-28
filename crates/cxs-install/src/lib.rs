@@ -13,7 +13,8 @@ use tempfile::TempDir;
 
 const SHUTTLE_RELEASES: &str = "https://github.com/pengzhendong/codex-shuttle/releases/download";
 const CODEX_RELEASES: &str = "https://github.com/openai/codex/releases/download";
-const REMOTE_LAYOUT_VERSION: u32 = 4;
+const EXECUTOR_SHA256_PLACEHOLDER: &str = "CXS_EXECUTOR_SHA256_PLACEHOLDER";
+const REMOTE_LAYOUT_VERSION: u32 = 5;
 const REMOTE_INSPECT_COMMAND: &str = "set -eu; cat \"$HOME/.config/codex-shuttle/install.json\"; printf '\\n'; \"$HOME/.local/bin/codex\" --version >&2; \"${SHELL:-/bin/sh}\" -l -i -c 'command -v codex >/dev/null' >/dev/null 2>&1";
 
 fn shuttle_release_tag() -> &'static str {
@@ -297,7 +298,7 @@ pub fn install(
         release: release_name.clone(),
         executor_source: Some(executor_source),
         executor_path: Some(exec_server.clone()),
-        executor_sha256: None,
+        executor_sha256: Some(EXECUTOR_SHA256_PLACEHOLDER.to_owned()),
     };
     let metadata_json = serde_json::to_string_pretty(&metadata)?;
     let executor_version = metadata
@@ -384,7 +385,7 @@ destination={destination}
 temporary="$destination.partial"
 manifest="$destination.SHA256SUMS"
 trap 'unlink "$manifest" 2>/dev/null || true' EXIT HUP INT TERM
-curl --http1.1 --fail --location --retry 3 --silent --show-error --output "$manifest" {manifest_url}
+curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --silent --show-error --output "$manifest" {manifest_url}
 expected=$(awk -v wanted={package_name} '$2 == wanted || $2 == "*" wanted {{ print $1; exit }}' "$manifest")
 test -n "$expected" || {{ echo "official checksum manifest did not contain the package" >&2; exit 1; }}
 if test -f "$destination"; then
@@ -392,7 +393,7 @@ if test -f "$destination"; then
   if test "$actual" = "$expected"; then printf '%s\n' "$expected"; exit 0; fi
   unlink "$destination"
 fi
-curl --http1.1 --fail --location --retry 3 --silent --show-error --continue-at - --output "$temporary" {url}
+curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --silent --show-error --continue-at - --output "$temporary" {url}
 actual=$(sha256sum "$temporary" | awk '{{print $1}}')
 test "$actual" = "$expected" || {{ unlink "$temporary"; echo "official Codex package checksum mismatch" >&2; exit 1; }}
 mv "$temporary" "$destination"
@@ -719,12 +720,15 @@ install -m 0700 "$shim" "$stage/cxs-shim"
 actual_version=$("$executor_probe" --version)
 test "$actual_version" = "$expected_version" || test "$actual_version" = "$expected_profile_version" || {{ echo "Codex package version mismatch: $actual_version" >&2; exit 1; }}
 "$executor_probe" exec-server --help >/dev/null 2>&1 || {{ echo "Codex executor has no exec-server command" >&2; exit 1; }}
+executor_sha256=$(sha256sum "$executor_probe" | awk '{{print $1}}')
 cat > "$stage/shim.json" <<'CXS_CONFIG'
 {config_json}
 CXS_CONFIG
 cat > "$stage/install.json" <<'CXS_METADATA'
 {metadata_json}
 CXS_METADATA
+sed "s/{executor_sha256_placeholder}/$executor_sha256/" "$stage/install.json" > "$stage/install.json.tmp"
+mv "$stage/install.json.tmp" "$stage/install.json"
 printf '%s\n' "$executor_installed" > "$stage/executor.path"
 if test -e "$release"; then find "$stage" -depth -delete; else mv "$stage" "$release"; fi
 printf '%s\n' "$token" > "$root/profiles/$profile/token"
@@ -789,6 +793,7 @@ test -x "$executor_installed" || {{ echo "configured Codex executor is not execu
         executor_installed = shell_quote(executor_installed),
         shim = shell_quote(shim),
         package = shell_quote(package),
+        executor_sha256_placeholder = EXECUTOR_SHA256_PLACEHOLDER,
     )
 }
 
@@ -1044,6 +1049,8 @@ mod tests {
         let root = home.join(".local/lib/codex-shuttle");
         let release = "codex-0.147.0-official";
         let executor = format!("{}/current/bin/codex", root.display());
+        let codex_sha256 = sha256_file(&codex)?;
+        let metadata_json = format!(r#"{{"executor_sha256":"{EXECUTOR_SHA256_PLACEHOLDER}"}}"#);
         let script = render_install_script(
             "gpu",
             &"a".repeat(64),
@@ -1055,7 +1062,7 @@ mod tests {
             &executor,
             shim.to_str().unwrap(),
             "{\"profile\":\"gpu\"}",
-            "{\"profile\":\"gpu\"}",
+            &metadata_json,
         );
         let output = Command::new("sh")
             .env("HOME", &home)
@@ -1071,6 +1078,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join(format!("releases/{release}/executor.path")))?.trim(),
             executor
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(format!("releases/{release}/install.json")))?,
+            format!("{{\"executor_sha256\":\"{codex_sha256}\"}}\n")
         );
         Ok(())
     }

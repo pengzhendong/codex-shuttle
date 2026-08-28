@@ -160,7 +160,7 @@ Each released Mac CLI embeds its complete Shuttle release tag. It downloads the 
 - OpenSSH remains responsible for encryption, host keys, identities, agents, and jump hosts.
 - No Codex login credential is copied to Linux.
 - Remote Exec and Host App Servers use separate private `CODEX_HOME` directories.
-- Official Codex and Shuttle shim artifacts are verified with SHA-256 before activation.
+- Official Codex and Shuttle shim artifacts are verified with SHA-256 before activation; `doctor` also checks the installed executor digest.
 - The local bridge uses a private Unix socket and a per-profile random token.
 - Remote releases are immutable and rollback keeps the previous verified release.
 - Session import rejects unsafe archive paths and never overwrites an existing thread ID.

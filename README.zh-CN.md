@@ -153,7 +153,7 @@ GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z`
 - OpenSSH 继续负责加密、主机密钥、身份文件、Agent 和跳板机。
 - 不会把 Codex 登录凭据复制到 Linux。
 - 远程 Exec 与 Host App Server 使用相互隔离的私有 `CODEX_HOME`。
-- 官方 Codex 和 Shuttle shim 激活前必须通过 SHA-256 校验。
+- 官方 Codex 和 Shuttle shim 激活前必须通过 SHA-256 校验；`doctor` 还会复核已安装执行器的摘要。
 - 本地桥接器使用私有 Unix socket 和每个 profile 独立的随机令牌。
 - 远程 Release 不可变，并保留上一份已验证 Release 用于回退。
 - Session 导入会拒绝不安全的归档路径，且不覆盖已有 thread ID。

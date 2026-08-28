@@ -32,7 +32,8 @@ remain available for older desktop-bundled Codex versions.
    downloads and verifies Codex first, then uploads it over SSH.
 4. The installer extracts to a private staging directory and checks the
    official Codex binary, code-mode host, ripgrep, bubblewrap, exact version,
-   and `exec-server` entry point before atomically switching `current`.
+   and `exec-server` entry point before atomically switching `current`. It also
+   records the extracted Codex digest so later `doctor` runs detect changes.
 5. `cxs up` starts one SSH stdio session. The shim starts official Codex's Exec
    Server and restricted Host App Servers; the Mac App Server remains the
    authority for the real thread and account state.
