@@ -107,7 +107,13 @@ fn live_agent_is_replaced_end_to_end() -> Result<(), Box<dyn std::error::Error>>
         }
         thread::sleep(Duration::from_millis(25));
     };
-    assert_eq!(first_status.signal(), Some(Signal::SIGTERM as i32));
+    // Depending on whether the Tokio signal listener is installed before the
+    // replacement arrives, SIGTERM either terminates the process directly or
+    // is handled as a graceful successful shutdown.
+    assert!(
+        first_status.success() || first_status.signal() == Some(Signal::SIGTERM as i32),
+        "original agent exited unexpectedly: {first_status}"
+    );
     assert!(replacement.0.try_wait()?.is_none());
     Ok(())
 }
