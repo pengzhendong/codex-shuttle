@@ -76,6 +76,10 @@ chmod 600 "$ssh_dir/authorized_keys"
 sudo chown root "$ssh_dir/host_key"
 if test "$kernel" = Linux; then
   sudo mkdir -p /run/sshd
+  # GitHub's Linux runner account is locked even though sudo is available.
+  # Public-key auth is still disabled for locked accounts, so clear the
+  # ephemeral password while keeping password authentication disabled below.
+  sudo passwd -d "$USER"
 fi
 cat >"$ssh_dir/sshd_config" <<EOF
 Port $port

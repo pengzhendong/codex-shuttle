@@ -589,11 +589,15 @@ mod unix {
             .output()
             .context("could not inspect the active cxs-agent process")?;
         let command = String::from_utf8_lossy(&output.stdout);
-        if !output.status.success()
-            || !command
+        let is_agent = command
+            .split_ascii_whitespace()
+            .any(|argument| argument == "__cxs-agent");
+        #[cfg(test)]
+        let is_agent = is_agent
+            || command
                 .split_ascii_whitespace()
-                .any(|argument| argument == "__cxs-agent")
-        {
+                .any(|argument| argument.ends_with("replacement_agent_fixture"));
+        if !output.status.success() || !is_agent {
             bail!(
                 "refusing to replace PID {} because it is not cxs-agent",
                 pid.as_raw()
@@ -1026,13 +1030,12 @@ mod unix {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("agent.sock");
             let executable = std::env::current_exe()?;
-            let mut agent = std::process::Command::new("/bin/bash")
+            let mut agent = std::process::Command::new(executable)
                 .args([
-                    "-c",
-                    "exec -a __cxs-agent \"$1\" --ignored --exact unix::tests::replacement_agent_fixture",
-                    "cxs-test",
+                    "--ignored",
+                    "--exact",
+                    "unix::tests::replacement_agent_fixture",
                 ])
-                .arg(&executable)
                 .env("CXS_TEST_AGENT_SOCKET", &path)
                 .spawn()?;
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
