@@ -85,6 +85,9 @@ if test "$kernel" = Linux; then
     sudo install -m 0644 "$apparmor_profile" /etc/apparmor.d/bwrap-userns-restrict
     sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
   fi
+  if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+  fi
   bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net /bin/true
   sudo mkdir -p /run/sshd
   # GitHub's Linux runner account is locked even though sudo is available.
