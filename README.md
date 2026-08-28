@@ -27,7 +27,7 @@ It uses your existing OpenSSH configuration and one ordinary SSH stdio connectio
 - **Native desktop workflow** — keep the Codex app, local account, and local thread database.
 - **Real remote paths** — browse and open Linux folders instead of mirrored Mac paths.
 - **Remote execution** — commands, terminals, file operations, search, Git metadata, and sandboxing run on Linux.
-- **Small remote runtime** — install only the version-matched App Server/Exec Server runtime, not the full Codex CLI/TUI.
+- **Official remote Codex** — use OpenAI's version-matched Linux package instead of a Shuttle-maintained fork.
 - **One SSH connection** — Yamux carries App, Exec, and Host channels over a single SSH stdin/stdout stream.
 - **Session migration** — pull server-created sessions to the Mac and repair Provider visibility metadata.
 - **Version-bound releases** — new stable OpenAI Codex source tags are checked daily; old Shuttle releases remain available.
@@ -78,7 +78,7 @@ cxs doctor devbox
 
 Shuttle creates the app-facing SSH alias `cxs-devbox`. In the Codex desktop app, choose that host and open a Linux path such as `/home/me/project`.
 
-The server downloads its matching runtime by default. To download it on the Mac and upload it over SSH instead:
+The server downloads the matching official Codex package by default. To download it on the Mac and upload it over SSH instead:
 
 ```bash
 cxs install devbox --local-download
@@ -89,10 +89,10 @@ cxs install devbox --local-download
 | Command | Purpose |
 | --- | --- |
 | `cxs add <ssh-host> [--name <profile>]` | Create or refresh a profile from `ssh -G` |
-| `cxs install <profile>` | Install the matching remote runtime and shim |
+| `cxs install <profile>` | Install matching official Codex and the Shuttle shim |
 | `cxs update <profile>` | Update artifacts for the current local Codex |
 | `cxs up <profile>` / `cxs down <profile>` | Start or stop the local bridge |
-| `cxs doctor <profile> [--json]` | Verify Codex, SSH, runtime, remote filesystem, and Linux command execution |
+| `cxs doctor <profile> [--json]` | Verify Codex, SSH, remote filesystem, and Linux command execution |
 | `cxs list` / `cxs status <profile>` | Inspect configured profiles |
 | `cxs config <profile>` | Print the generated SSH host block |
 | `cxs rollback <profile>` | Switch back to the previous remote release |
@@ -100,7 +100,7 @@ cxs install devbox --local-download
 | `cxs repair` | Back up and repair local Provider/session metadata |
 | `cxs remove <profile> [--remote]` | Remove local state and optionally remote Shuttle state |
 
-Run `cxs <command> --help` for user-facing options. Development-only artifact overrides remain supported but are intentionally hidden from the normal help output.
+Run `cxs <command> --help` for all user-facing options.
 
 ## Session sync
 
@@ -136,7 +136,9 @@ Codex desktop app
                                                                   owns sessions
 ```
 
-The Mac App Server remains authoritative for threads and account state. Shuttle registers a Linux execution environment and routes host-facing filesystem/process RPCs to a restricted Linux App Server. The remote runtime is built from [OpenAI Codex](https://github.com/openai/codex)'s matching public `rust-vX.Y.Z` source and contains only the App Server and Exec Server entry points Shuttle needs.
+The Mac App Server remains authoritative for threads and account state. Shuttle registers a Linux execution environment and routes host-facing filesystem/process RPCs to a restricted Linux App Server. The remote executor is OpenAI's official [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases), including its maintained App Server, Exec Server, sandbox, code-mode host, and ripgrep components. Shuttle adds only the SSH/Yamux shim.
+
+The shim intercepts only the desktop App Server bootstrap and Shuttle's hidden agent command. Other `codex` CLI commands are delegated to the managed official binary.
 
 Read [Architecture](docs/architecture.md) for protocol details and [Dependency boundaries](docs/dependency-boundaries.md) for what Shuttle reuses instead of reimplementing.
 
@@ -144,20 +146,21 @@ Read [Architecture](docs/architecture.md) for protocol details and [Dependency b
 
 GitHub Actions checks for stable OpenAI `rust-vX.Y.Z` tags daily at 00:17 UTC and
 processes every unpublished version in order. A version-bound Shuttle release
-is published only after workspace tests, both Mac builds, both Linux shims, and
-both Linux runtime smoke tests succeed. These gates prove build compatibility;
+is published only after workspace tests, both Mac builds, and both Linux shims
+succeed. The matching official Linux Codex package must already exist upstream.
+These gates prove build compatibility;
 `cxs doctor` is still the live end-to-end check for a specific Mac and server.
 A failed build creates no partial release and is retried by the next scheduled
 run.
 
-Each released Mac CLI embeds its complete release tag and downloads the shim/runtime from that same immutable release. See [Runtime release flow](docs/runtime-release.md) and [Compatibility](docs/compatibility.md).
+Each released Mac CLI embeds its complete Shuttle release tag. It downloads the shim from that immutable release and Codex from the matching immutable OpenAI release. See [Release and install flow](docs/runtime-release.md) and [Compatibility](docs/compatibility.md).
 
 ## Security model
 
 - OpenSSH remains responsible for encryption, host keys, identities, agents, and jump hosts.
 - No Codex login credential is copied to Linux.
 - Remote Exec and Host App Servers use separate private `CODEX_HOME` directories.
-- Runtime and shim artifacts are verified with SHA-256 before activation.
+- Official Codex and Shuttle shim artifacts are verified with SHA-256 before activation.
 - The local bridge uses a private Unix socket and a per-profile random token.
 - Remote releases are immutable and rollback keeps the previous verified release.
 - Session import rejects unsafe archive paths and never overwrites an existing thread ID.
@@ -173,7 +176,7 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-The version-pinned remote runtime is intentionally outside the normal Cargo workspace. See [CONTRIBUTING.md](CONTRIBUTING.md) and [Runtime release flow](docs/runtime-release.md) before changing protocol or release code.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [Release and install flow](docs/runtime-release.md) before changing protocol or release code.
 
 ## Status
 

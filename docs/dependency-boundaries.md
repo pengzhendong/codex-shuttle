@@ -11,7 +11,7 @@ Codex Shuttle should own only the adaptation that is specific to connecting Code
 | JSON and persistent metadata | Serde and `serde_json` | versioned profile/install schemas |
 | Atomic temporary files | `tempfile` | permissions and ownership policy |
 | Cryptographic digest and token comparison | `sha2`, `getrandom`, and `subtle` | artifact identity and handshake fields |
-| Remote execution semantics | OpenAI `codex-exec-server` and `codex-app-server` libraries | a narrow release-only entry point, version qualification, and relay |
+| Remote execution semantics | OpenAI's official Codex Linux package | version qualification, activation, and relay |
 | Artifact transfer | OpenSSH plus `curl` on the target | retry/resume and activation policy |
 | Session archive transfer | OpenSSH plus `tar` | path/size validation and thread-ID deduplication |
 | Codex state repair | `rusqlite` | online backup and schema-aware Provider/CWD updates |
@@ -34,12 +34,13 @@ workflow.
 
 ## Executor selection
 
-The installer uses this order:
+The installer always selects OpenAI's official source-version and
+architecture-matched `codex-package-<target>.tar.gz`. The SSH host downloads it
+by default; `--local-download` moves that download to the Mac and uploads the
+same verified archive. There is no custom runtime, existing-binary fallback,
+or system-wide Codex dependency.
 
-1. An explicit local `--runtime-package`, when provided.
-2. An explicit `--remote-codex` path, when provided.
-3. The public-source-version/architecture-matched `cxs-runtime` from the current Shuttle release; the SSH host downloads it by default.
-
-There is no automatic full-Codex fallback. A missing runtime is an unsupported version and installation fails.
-
-An explicit full remote Codex must match the local version exactly. A managed runtime matches the public source baseline (for example `0.147.0-alpha.6.5` uses `0.147.0`). Both retain a recorded SHA-256 fingerprint and must pass the live App Server-to-Exec Server plus remote-filesystem readiness probe. `cxs-runtime` reuses OpenAI's Rust libraries; Shuttle does not maintain alternate process, PTY, filesystem, or sandbox implementations.
+The public source baseline is used for desktop prereleases (for example,
+`0.147.0-alpha.6.5` selects official `0.147.0`). The official package and
+Shuttle shim both retain SHA-256 fingerprints and must pass the live App
+Server-to-Exec Server plus remote-filesystem readiness probe.

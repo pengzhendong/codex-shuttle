@@ -1,52 +1,44 @@
-# Runtime release flow
+# Release and install flow
 
-`cxs-runtime` is a version-pinned Linux executor for Shuttle. It is not part of the normal Shuttle Cargo workspace and is never compiled on the user's Mac or SSH host.
+Codex Shuttle does not compile or redistribute Codex. It uses the official,
+versioned Linux packages published by OpenAI and releases only Shuttle's macOS
+CLI and Linux shim.
 
-## Automatic Codex releases
+## Automatic Shuttle releases
 
-1. Every hour, GitHub Actions discovers stable OpenAI `rust-vX.Y.Z`
-   tags at or above the baseline in `runtime/codex-versions.txt`.
-2. If `v<shuttle-version>-codex.<codex-version>` does not exist, the workflow
-   selects the oldest unpublished version, runs the workspace tests, and starts
-   all platform builds. This preserves every stable version even when upstream
-   publishes multiple tags while a build is running.
-3. `scripts/build-cxs-runtime.sh` downloads OpenAI's exact `rust-v<version>`
-   source and injects `runtime/cxs-runtime` as an additional workspace member.
-4. GitHub Actions cross-compiles static `x86_64-unknown-linux-musl` and
-   `aarch64-unknown-linux-musl` binaries and smoke-tests both packages. Runtime
-   build outputs are cached per architecture and restored across nearby Codex
-   versions; ThinLTO is disabled because this RPC host is latency-insensitive
-   compared with the cost of whole-program release linking.
-5. When publishing another Shuttle version for the same Codex version, the
-   workflow compares the runtime source, build script, and runtime workflow
-   with the previous Release. If none changed, it downloads both previous
-   runtime packages, verifies them against that Release's `SHA256SUMS`, and
-   attaches them to the new Release instead of compiling them again.
-6. Only after both Mac CLIs, Linux shims, runtimes, and all tests pass does it
-   publish an immutable Release with `SHA256SUMS`.
+1. Every day, GitHub Actions discovers stable OpenAI `rust-vX.Y.Z` tags at or
+   above the baseline in `runtime/codex-versions.txt`.
+2. It selects the oldest version without a matching
+   `v<shuttle-version>-codex.<codex-version>` Shuttle release.
+3. The workflow verifies that OpenAI published official Linux packages for
+   x86_64 and arm64, runs all workspace tests, and builds two macOS CLIs plus
+   two static Linux shims.
+4. It publishes those four small binaries and `SHA256SUMS`. No Codex source is
+   checked out and no Codex runtime is compiled or stored by Shuttle.
 
-A failed build creates no Release and is retried by the next scheduled run.
-`workflow_dispatch` can publish a specific stable Codex version. Older Releases
-are retained so users can install an older version-bound set.
-
-These automated gates establish build compatibility for a new source tag. They
-do not have access to every user's SSH host or desktop build, so the installed
-profile becomes `ready` only after `cxs doctor` completes its live App Server,
-Exec Server, and remote-filesystem checks.
-
-The runtime entry point exposes only `--version`, `app-server`, and `exec-server`. Both services call OpenAI's own Rust libraries. OpenAI's arg0 dispatcher is retained so Exec Server filesystem helpers, process helpers, and Linux sandbox self-reexec continue to work. The package also includes OpenAI's `codex-bwrap` build and the exact `ripgrep` artifact pinned by that source tag, so sandboxing and searches work on minimal Linux hosts.
+A failed build creates no partial release and is retried by the next scheduled
+run. `workflow_dispatch` can publish a specific stable version. Older releases
+remain available for older desktop-bundled Codex versions.
 
 ## Install and activation
 
-1. `cxs install` reads the exact version of the Codex binary bundled with ChatGPT Desktop, derives its public source baseline, and detects the remote architecture.
-2. It constructs the matching runtime artifact name in the same Shuttle release as the CLI.
-3. By default the SSH host downloads the release checksum manifest and its `cxs-runtime-linux-<arch>-codex-<version>.tar.gz` package in parallel with the Mac uploading `cxs-shim-linux-<arch>`. With `--local-download`, the Mac downloads and verifies the same artifact before uploading it.
-4. The installer verifies SHA-256, extracts into a private immutable staging directory, checks the exact version and `exec-server --help`, writes `shim.json` and `install.json`, then atomically switches `current`.
-5. `cxs up` starts one SSH stdio session. The remote shim starts the runtime Exec Server; Host channels start restricted runtime App Servers. The Mac bridge keeps the real thread/session App Server local.
-6. Readiness is granted only after environment registration and a real remote directory read succeed.
+1. `cxs install` reads the Codex version bundled with ChatGPT Desktop, derives
+   its public source baseline, and detects the remote Linux architecture.
+2. It selects OpenAI's immutable
+   `rust-v<version>/codex-package-<target>.tar.gz` and
+   `codex-package_SHA256SUMS` assets.
+3. By default the SSH host downloads and verifies the official package while
+   the Mac uploads the small Shuttle shim. With `--local-download`, the Mac
+   downloads and verifies Codex first, then uploads it over SSH.
+4. The installer extracts to a private staging directory and checks the
+   official Codex binary, code-mode host, ripgrep, bubblewrap, exact version,
+   and `exec-server` entry point before atomically switching `current`.
+5. `cxs up` starts one SSH stdio session. The shim starts official Codex's Exec
+   Server and restricted Host App Servers; the Mac App Server remains the
+   authority for the real thread and account state.
+6. A profile becomes ready only after live environment registration, Linux
+   command execution, and a remote directory read succeed.
 
-If the runtime artifact is missing or cannot be verified, installation stops.
-Each released Mac CLI embeds its full GitHub Release tag and downloads the shim
-and runtime from that same Release, preventing cross-version asset mixing.
-
-For pre-release validation, build a runtime locally and install it with `cxs install <profile> --runtime-package <archive> --shim <linux-shim>`.
+The official package is not installed system-wide. It lives under
+`~/.local/lib/codex-shuttle/releases/`, while `~/.local/bin/codex` remains the
+Shuttle shim expected by the desktop SSH bootstrap.

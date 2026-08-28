@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 const SHUTTLE_RELEASES: &str = "https://github.com/pengzhendong/codex-shuttle/releases/download";
-const REMOTE_LAYOUT_VERSION: u32 = 3;
+const CODEX_RELEASES: &str = "https://github.com/openai/codex/releases/download";
+const REMOTE_LAYOUT_VERSION: u32 = 4;
 const REMOTE_INSPECT_COMMAND: &str = "set -eu; cat \"$HOME/.config/codex-shuttle/install.json\"; printf '\\n'; \"$HOME/.local/bin/codex\" --version >&2; \"${SHELL:-/bin/sh}\" -l -i -c 'command -v codex >/dev/null' >/dev/null 2>&1";
 
 fn shuttle_release_tag() -> &'static str {
@@ -28,21 +29,19 @@ fn release_asset_url(release_base: &str, release_tag: &str, asset: &str) -> Stri
 
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
-    pub runtime_package: Option<PathBuf>,
     pub local_download: bool,
-    pub remote_codex: Option<String>,
     pub shim: Option<PathBuf>,
     pub shuttle_release_base: String,
+    pub codex_release_base: String,
 }
 
 impl Default for InstallOptions {
     fn default() -> Self {
         Self {
-            runtime_package: None,
             local_download: false,
-            remote_codex: None,
             shim: None,
             shuttle_release_base: SHUTTLE_RELEASES.to_owned(),
+            codex_release_base: CODEX_RELEASES.to_owned(),
         }
     }
 }
@@ -63,6 +62,7 @@ pub struct InstallRecord {
 pub enum ExecutorSource {
     ManagedRuntime,
     RemoteExisting,
+    OfficialRelease,
 }
 
 impl std::fmt::Display for ExecutorSource {
@@ -70,6 +70,7 @@ impl std::fmt::Display for ExecutorSource {
         match self {
             Self::ManagedRuntime => formatter.write_str("managed-runtime"),
             Self::RemoteExisting => formatter.write_str("remote-existing"),
+            Self::OfficialRelease => formatter.write_str("official-release"),
         }
     }
 }
@@ -114,32 +115,21 @@ struct ShimConfig<'a> {
 }
 
 enum PackageSource {
-    Upload {
-        path: PathBuf,
-        sha256: String,
-    },
-    LocalRuntime {
-        runtime_url: String,
-        runtime_manifest_url: String,
-        runtime_name: String,
+    LocalDownload {
+        package_url: String,
+        manifest_url: String,
+        package_name: String,
         path: PathBuf,
     },
-    RemoteRuntime {
-        runtime_url: String,
-        runtime_manifest_url: String,
-        runtime_name: String,
+    RemoteDownload {
+        package_url: String,
+        manifest_url: String,
+        package_name: String,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PackageTransfer {
-    sha256: String,
-}
-
-#[derive(Debug)]
-struct ReusableExecutor {
-    probe_path: String,
-    installed_path: String,
     sha256: String,
 }
 
@@ -187,62 +177,34 @@ pub fn install(
     let target = linux_target(facts)?;
     let version = codex_source_version(&profile.codex_version)?;
     let temporary = tempfile::tempdir().context("could not create installer workspace")?;
-    if usize::from(options.runtime_package.is_some())
-        + usize::from(options.remote_codex.is_some())
-        + usize::from(options.local_download)
-        > 1
-    {
-        bail!("runtime package, local download, and remote Codex are mutually exclusive");
-    }
-
     let root = format!("{}/.local/lib/codex-shuttle", facts.home);
-    let reusable = if let Some(remote_codex) = options.remote_codex.as_deref() {
-        let source_version = format!("codex-cli {version}");
-        Some(validate_remote_executor(
-            profile,
-            &root,
-            &profile.codex_version,
-            &source_version,
-            remote_codex,
-        )?)
-    } else {
-        None
-    };
-
-    let arch = match target {
-        "x86_64-unknown-linux-musl" => "x86_64",
-        "aarch64-unknown-linux-musl" => "aarch64",
-        _ => unreachable!("linux_target returned an unsupported target"),
-    };
-    let runtime_name = format!("cxs-runtime-linux-{arch}-codex-{version}.tar.gz");
+    let arch = target
+        .split_once('-')
+        .map_or(target, |(architecture, _)| architecture);
+    let package_name = format!("codex-package-{target}.tar.gz");
     let remote_package = format!("/tmp/cxs-{}-codex.tar.gz", profile.name);
     let remote_package_partial = format!("{remote_package}.partial");
     let release_tag = shuttle_release_tag();
-    let runtime_url = release_asset_url(&options.shuttle_release_base, release_tag, &runtime_name);
-    let runtime_manifest_url =
-        release_asset_url(&options.shuttle_release_base, release_tag, "SHA256SUMS");
-    let package_source = if reusable.is_some() {
-        None
-    } else if let Some(path) = &options.runtime_package {
-        let path = canonical_file(path, "Shuttle runtime package")?;
-        let digest = sha256_file(&path)?;
-        Some(PackageSource::Upload {
-            path,
-            sha256: digest,
-        })
-    } else if options.local_download {
-        Some(PackageSource::LocalRuntime {
-            runtime_url,
-            runtime_manifest_url,
-            runtime_name,
+    let codex_tag = format!("rust-v{version}");
+    let package_url = release_asset_url(&options.codex_release_base, &codex_tag, &package_name);
+    let manifest_url = release_asset_url(
+        &options.codex_release_base,
+        &codex_tag,
+        "codex-package_SHA256SUMS",
+    );
+    let package_source = if options.local_download {
+        PackageSource::LocalDownload {
+            package_url,
+            manifest_url,
+            package_name,
             path: temporary.path().join("runtime.tar.gz"),
-        })
+        }
     } else {
-        Some(PackageSource::RemoteRuntime {
-            runtime_url,
-            runtime_manifest_url,
-            runtime_name,
-        })
+        PackageSource::RemoteDownload {
+            package_url,
+            manifest_url,
+            package_name,
+        }
     };
 
     let shim_name = format!("cxs-shim-linux-{arch}");
@@ -258,49 +220,31 @@ pub fn install(
     let shim_sha256 = sha256_file(&shim)?;
 
     let remote_shim = format!("/tmp/cxs-{}-shim", profile.name);
-    let reusable_sha256 = reusable.as_ref().map(|executor| executor.sha256.clone());
-    let (package_sha256, executor_source, executor_probe, exec_server) =
-        if let Some(reusable) = reusable {
-            upload(&profile.source_host, &shim, &remote_shim)?;
-            (
-                None,
-                ExecutorSource::RemoteExisting,
-                reusable.probe_path,
-                reusable.installed_path,
-            )
-        } else {
-            let package_source = package_source.context("Codex package source was not selected")?;
-            let (package_result, shim_result) = transfer_install_artifacts(
-                || transfer_package(&package_source, &profile.source_host, &remote_package),
-                || upload(&profile.source_host, &shim, &remote_shim),
-            );
-            let transferred = match (package_result, shim_result) {
-                (Ok(transferred), Ok(())) => transferred,
-                (Err(package_error), Ok(())) => {
-                    let _ = cleanup_remote_temp(&profile.source_host, &[&remote_shim]);
-                    return Err(package_error.context("Codex package transfer failed"));
-                }
-                (Ok(_), Err(shim_error)) => {
-                    let _ = cleanup_remote_temp(&profile.source_host, &[&remote_shim]);
-                    return Err(shim_error.context(
-                        "shim upload failed; the verified Codex package was retained for retry",
-                    ));
-                }
-                (Err(package_error), Err(shim_error)) => {
-                    let _ = cleanup_remote_temp(&profile.source_host, &[&remote_shim]);
-                    return Err(package_error.context(format!(
-                    "Codex package transfer and shim upload both failed; shim error: {shim_error:#}"
-                )));
-                }
-            };
-            let exec_server = format!("{root}/current/bin/cxs-runtime");
-            (
-                Some(transferred.sha256.clone()),
-                ExecutorSource::ManagedRuntime,
-                String::new(),
-                exec_server,
-            )
-        };
+    let (package_result, shim_result) = transfer_install_artifacts(
+        || transfer_package(&package_source, &profile.source_host, &remote_package),
+        || upload(&profile.source_host, &shim, &remote_shim),
+    );
+    let transferred = match (package_result, shim_result) {
+        (Ok(transferred), Ok(())) => transferred,
+        (Err(package_error), Ok(())) => {
+            let _ = cleanup_remote_temp(&profile.source_host, &[&remote_shim]);
+            return Err(package_error.context("official Codex package transfer failed"));
+        }
+        (Ok(_), Err(shim_error)) => {
+            let _ = cleanup_remote_temp(&profile.source_host, &[&remote_shim]);
+            return Err(shim_error
+                .context("shim upload failed; the verified Codex package was retained for retry"));
+        }
+        (Err(package_error), Err(shim_error)) => {
+            let _ = cleanup_remote_temp(&profile.source_host, &[&remote_shim]);
+            return Err(package_error.context(format!(
+                "Codex package transfer and shim upload both failed; shim error: {shim_error:#}"
+            )));
+        }
+    };
+    let package_sha256 = Some(transferred.sha256);
+    let executor_source = ExecutorSource::OfficialRelease;
+    let exec_server = format!("{root}/current/bin/codex");
 
     let token_file = format!("{root}/profiles/{}/token", profile.name);
     let codex_home = format!("{root}/profiles/{}/codex-home", profile.name);
@@ -329,14 +273,13 @@ pub fn install(
         ],
         exec_server_port: profile.remote_exec_port,
         codex_home,
-        original_codex: format!("{root}/original-codex"),
+        original_codex: exec_server.clone(),
     };
     let config_json = serde_json::to_string_pretty(&config)?;
     let config_sha256 = sha256_bytes(config_json.as_bytes());
     let artifact_identity = package_sha256
         .as_deref()
-        .or(reusable_sha256.as_deref())
-        .context("executor artifact identity was unavailable")?;
+        .context("official package identity was unavailable")?;
     let release_name = format!(
         "codex-{version}-r{REMOTE_LAYOUT_VERSION}-{}-{}-{}",
         &artifact_identity[..8],
@@ -354,7 +297,7 @@ pub fn install(
         release: release_name.clone(),
         executor_source: Some(executor_source),
         executor_path: Some(exec_server.clone()),
-        executor_sha256: reusable_sha256,
+        executor_sha256: None,
     };
     let metadata_json = serde_json::to_string_pretty(&metadata)?;
     let executor_version = metadata
@@ -368,8 +311,7 @@ pub fn install(
         executor_version,
         &root,
         &release_name,
-        package_sha256.as_ref().map(|_| remote_package.as_str()),
-        &executor_probe,
+        &remote_package,
         &exec_server,
         &remote_shim,
         &config_json,
@@ -399,35 +341,29 @@ fn transfer_package(
     destination: &str,
 ) -> Result<PackageTransfer> {
     match source {
-        PackageSource::Upload { path, sha256 } => {
-            upload(host, path, destination)?;
-            Ok(PackageTransfer {
-                sha256: sha256.clone(),
-            })
-        }
-        PackageSource::LocalRuntime {
-            runtime_url,
-            runtime_manifest_url,
-            runtime_name,
+        PackageSource::LocalDownload {
+            package_url,
+            manifest_url,
+            package_name,
             path,
         } => {
             let manifest = path.with_extension("SHA256SUMS");
-            download(runtime_manifest_url, &manifest)?;
-            let sha256 = checksum_from_file(&manifest, runtime_name)?;
-            download(runtime_url, path)?;
+            download(manifest_url, &manifest)?;
+            let sha256 = checksum_from_file(&manifest, package_name)?;
+            download(package_url, path)?;
             verify_sha256(path, &sha256)?;
             upload(host, path, destination)?;
             Ok(PackageTransfer { sha256 })
         }
-        PackageSource::RemoteRuntime {
-            runtime_url,
-            runtime_manifest_url,
-            runtime_name,
+        PackageSource::RemoteDownload {
+            package_url,
+            manifest_url,
+            package_name,
         } => remote_download_from_manifest(
             host,
-            runtime_url,
-            runtime_manifest_url,
-            runtime_name,
+            package_url,
+            manifest_url,
+            package_name,
             destination,
         )
         .map(|sha256| PackageTransfer { sha256 }),
@@ -450,7 +386,7 @@ manifest="$destination.SHA256SUMS"
 trap 'unlink "$manifest" 2>/dev/null || true' EXIT HUP INT TERM
 curl --http1.1 --fail --location --retry 3 --silent --show-error --output "$manifest" {manifest_url}
 expected=$(awk -v wanted={package_name} '$2 == wanted || $2 == "*" wanted {{ print $1; exit }}' "$manifest")
-test -n "$expected" || {{ echo "runtime checksum manifest did not contain the package" >&2; exit 1; }}
+test -n "$expected" || {{ echo "official checksum manifest did not contain the package" >&2; exit 1; }}
 if test -f "$destination"; then
   actual=$(sha256sum "$destination" | awk '{{print $1}}')
   if test "$actual" = "$expected"; then printf '%s\n' "$expected"; exit 0; fi
@@ -458,7 +394,7 @@ if test -f "$destination"; then
 fi
 curl --http1.1 --fail --location --retry 3 --silent --show-error --continue-at - --output "$temporary" {url}
 actual=$(sha256sum "$temporary" | awk '{{print $1}}')
-test "$actual" = "$expected" || {{ unlink "$temporary"; echo "runtime package checksum mismatch" >&2; exit 1; }}
+test "$actual" = "$expected" || {{ unlink "$temporary"; echo "official Codex package checksum mismatch" >&2; exit 1; }}
 mv "$temporary" "$destination"
 printf '%s\n' "$expected"
 "#,
@@ -468,114 +404,13 @@ printf '%s\n' "$expected"
         url = shell_quote(url),
     );
     let output = run_ssh_script_with_output(host, &script)
-        .context("could not download the verified Shuttle runtime package")?;
+        .context("could not download the verified official Codex package")?;
     let digest = String::from_utf8(output)
-        .context("remote runtime checksum output was not UTF-8")?
+        .context("remote Codex checksum output was not UTF-8")?
         .trim()
         .to_ascii_lowercase();
     validate_sha256(&digest)?;
     Ok(digest)
-}
-
-fn validate_remote_executor(
-    profile: &Profile,
-    root: &str,
-    expected_version: &str,
-    expected_source_version: &str,
-    path: &str,
-) -> Result<ReusableExecutor> {
-    if !path.starts_with('/') || path.contains(['\n', '\r', '\0']) {
-        bail!("--remote-codex must be an absolute remote path without control characters");
-    }
-    let script =
-        render_remote_executor_probe_script(root, expected_version, expected_source_version, path);
-    let mut child = Command::new("ssh")
-        .args(["-T", "-o", "BatchMode=yes", &profile.source_host, "sh -s"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "could not validate the remote Codex executor on {}",
-                profile.source_host
-            )
-        })?;
-    child
-        .stdin
-        .take()
-        .context("remote Codex probe stdin was unavailable")?
-        .write_all(script.as_bytes())?;
-    let output = child.wait_with_output()?;
-    if output.status.code() == Some(42) {
-        bail!("remote Codex at {path} is missing, has the wrong version, or lacks exec-server");
-    }
-    if !output.status.success() {
-        bail!(
-            "remote Codex reuse probe failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    parse_reusable_executor(&output.stdout)
-}
-
-fn render_remote_executor_probe_script(
-    root: &str,
-    expected_version: &str,
-    expected_source_version: &str,
-    path: &str,
-) -> String {
-    format!(
-        r#"set -eu
-root={root}
-expected={expected}
-expected_source={expected_source}
-candidate={path}
-managed="$root/current/cxs-shim"
-managed_resolved=$(readlink -f "$managed" 2>/dev/null || printf '%s' "$managed")
-test -x "$candidate" || exit 42
-resolved=$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")
-test "$resolved" != "$managed_resolved" || exit 42
-actual=$("$candidate" --version 2>/dev/null || true)
-test "$actual" = "$expected" || test "$actual" = "$expected_source" || exit 42
-"$candidate" exec-server --help >/dev/null 2>&1 || exit 42
-digest=$(sha256sum "$resolved" | awk '{{print $1}}')
-installed="$resolved"
-if test "$resolved" = "$HOME/.local/bin/codex"; then
-  installed="$root/original-codex"
-fi
-printf '%s\n%s\n%s\n' "$resolved" "$installed" "$digest"
-"#,
-        root = shell_quote(root),
-        expected = shell_quote(expected_version),
-        expected_source = shell_quote(expected_source_version),
-        path = shell_quote(path),
-    )
-}
-
-fn parse_reusable_executor(output: &[u8]) -> Result<ReusableExecutor> {
-    let output = String::from_utf8(output.to_vec())
-        .context("remote Codex reuse probe returned non-UTF-8 output")?;
-    let mut lines = output.lines();
-    let probe_path = lines
-        .next()
-        .context("remote Codex probe omitted its path")?;
-    let installed_path = lines
-        .next()
-        .context("remote Codex probe omitted its installed path")?;
-    let sha256 = lines
-        .next()
-        .context("remote Codex probe omitted its checksum")?
-        .to_ascii_lowercase();
-    if !probe_path.starts_with('/') || !installed_path.starts_with('/') {
-        bail!("remote Codex probe returned a non-absolute path");
-    }
-    validate_sha256(&sha256)?;
-    Ok(ReusableExecutor {
-        probe_path: probe_path.to_owned(),
-        installed_path: installed_path.to_owned(),
-        sha256,
-    })
 }
 
 fn transfer_install_artifacts<P, S>(package: P, shim: S) -> (Result<PackageTransfer>, Result<()>)
@@ -840,27 +675,12 @@ fn render_install_script(
     executor_version: &str,
     root: &str,
     release_name: &str,
-    package: Option<&str>,
-    executor_probe: &str,
+    package: &str,
     executor_installed: &str,
     shim: &str,
     config_json: &str,
     metadata_json: &str,
 ) -> String {
-    let prepare_executor = package.map_or_else(
-        || {
-            format!(
-                "executor_probe={}\ntest -x \"$executor_probe\" || {{ echo \"reusable Codex executor disappeared\" >&2; exit 1; }}",
-                shell_quote(executor_probe)
-            )
-        },
-        |package| {
-            format!(
-                "package={}\ntar -xzf \"$package\" -C \"$stage\"\nexecutor_probe=\"$stage/bin/cxs-runtime\"\ntest -x \"$executor_probe\" || {{ echo \"runtime package has no executable bin/cxs-runtime\" >&2; exit 1; }}",
-                shell_quote(package),
-            )
-        },
-    );
     format!(
         r#"set -eu
 umask 077
@@ -872,6 +692,7 @@ root={root}
 release="$root/releases/{release_name}"
 stage="$root/.stage-{release_name}"
 executor_installed={executor_installed}
+package={package}
 shim={shim}
 config_dir="$HOME/.config/codex-shuttle"
 owner_file="$config_dir/owner"
@@ -888,7 +709,12 @@ mkdir -p "$root/releases" "$root/profiles/$profile/codex-home" "$config_dir" "$H
 if test -e "$root/current" && test ! -L "$root/current"; then echo "$root/current is not a managed symlink" >&2; exit 1; fi
 if test -e "$stage"; then find "$stage" -depth -delete; fi
 mkdir "$stage"
-{prepare_executor}
+tar -xzf "$package" -C "$stage"
+executor_probe="$stage/bin/codex"
+test -x "$executor_probe" || {{ echo "official package has no executable bin/codex" >&2; exit 1; }}
+test -x "$stage/bin/codex-code-mode-host" || {{ echo "official package has no code mode host" >&2; exit 1; }}
+test -x "$stage/codex-path/rg" || {{ echo "official package has no bundled ripgrep" >&2; exit 1; }}
+test -x "$stage/codex-resources/bwrap" || {{ echo "official Linux package has no bubblewrap" >&2; exit 1; }}
 install -m 0700 "$shim" "$stage/cxs-shim"
 actual_version=$("$executor_probe" --version)
 test "$actual_version" = "$expected_version" || test "$actual_version" = "$expected_profile_version" || {{ echo "Codex package version mismatch: $actual_version" >&2; exit 1; }}
@@ -962,7 +788,7 @@ test -x "$executor_installed" || {{ echo "configured Codex executor is not execu
         release_name = release_name,
         executor_installed = shell_quote(executor_installed),
         shim = shell_quote(shim),
-        prepare_executor = prepare_executor,
+        package = shell_quote(package),
     )
 }
 
@@ -1094,7 +920,7 @@ mod tests {
             shim_sha256: "b".repeat(64),
             release: "codex-0.147.0-test".to_owned(),
             executor_source: Some(ExecutorSource::ManagedRuntime),
-            executor_path: Some("/tmp/cxs-runtime".to_owned()),
+            executor_path: Some("/tmp/codex".to_owned()),
             executor_sha256: None,
         };
         fs::write(
@@ -1177,97 +1003,31 @@ mod tests {
     }
 
     #[test]
-    fn install_script_can_reuse_an_existing_executor() -> Result<()> {
+    fn install_script_accepts_an_official_package() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let home = directory.path().join("home");
-        let executor = directory.path().join("remote-codex");
-        fs::write(&executor, "#!/bin/sh\nprintf 'codex-cli 0.147.0\\n'\n")?;
-        fs::set_permissions(&executor, fs::Permissions::from_mode(0o700))?;
-        let shim = directory.path().join("cxs-shim");
-        fs::write(&shim, "#!/bin/sh\nprintf 'codex-cli 0.147.0\\n'\n")?;
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o700))?;
-        let root = home.join(".local/lib/codex-shuttle");
-        let script = render_install_script(
-            "gpu",
-            &"a".repeat(64),
-            "codex-cli 0.147.0",
-            "codex-cli 0.147.0",
-            root.to_str().unwrap(),
-            "codex-0.147.0-reuse",
-            None,
-            executor.to_str().unwrap(),
-            executor.to_str().unwrap(),
-            shim.to_str().unwrap(),
-            "{\"profile\":\"gpu\"}",
-            "{\"profile\":\"gpu\"}",
-        );
-        let output = Command::new("sh")
-            .env("HOME", &home)
-            .arg("-c")
-            .arg(script)
-            .output()?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!root.join("current/bin/codex").exists());
-        assert!(executor.is_file());
-        Ok(())
-    }
-
-    #[test]
-    fn install_script_accepts_source_version_for_desktop_prerelease() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let home = directory.path().join("home");
-        let executor = directory.path().join("cxs-runtime");
+        let package_root = directory.path().join("codex-package");
+        let package_bin = package_root.join("bin");
+        let package_path = package_root.join("codex-path");
+        let package_resources = package_root.join("codex-resources");
+        fs::create_dir_all(&package_bin)?;
+        fs::create_dir_all(&package_path)?;
+        fs::create_dir_all(&package_resources)?;
+        let codex = package_bin.join("codex");
         fs::write(
-            &executor,
+            &codex,
             "#!/bin/sh\ncase \"$1\" in --version) printf 'codex-cli 0.147.0\\n' ;; exec-server) exit 0 ;; esac\n",
         )?;
-        fs::set_permissions(&executor, fs::Permissions::from_mode(0o700))?;
-        let shim = directory.path().join("cxs-shim");
-        fs::write(&shim, "#!/bin/sh\nexit 0\n")?;
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o700))?;
-        let root = home.join(".local/lib/codex-shuttle");
-        let script = render_install_script(
-            "gpu",
-            &"a".repeat(64),
-            "codex-cli 0.147.0-alpha.6.5",
-            "codex-cli 0.147.0",
-            root.to_str().unwrap(),
-            "codex-0.147.0-prerelease-reuse",
-            None,
-            executor.to_str().unwrap(),
-            executor.to_str().unwrap(),
-            shim.to_str().unwrap(),
-            "{\"profile\":\"gpu\"}",
-            "{\"profile\":\"gpu\"}",
-        );
-        let output = Command::new("sh")
-            .env("HOME", &home)
-            .arg("-c")
-            .arg(script)
-            .output()?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn install_script_accepts_a_minimal_runtime_package() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let home = directory.path().join("home");
-        let package_root = directory.path().join("runtime-package");
-        let package_bin = package_root.join("bin");
-        fs::create_dir_all(&package_bin)?;
-        let runtime = package_bin.join("cxs-runtime");
-        fs::write(&runtime, "#!/bin/sh\nprintf 'codex-cli 0.147.0\\n'\n")?;
-        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
-        let package = directory.path().join("runtime.tar.gz");
+        let code_mode_host = package_bin.join("codex-code-mode-host");
+        let ripgrep = package_path.join("rg");
+        let bubblewrap = package_resources.join("bwrap");
+        for executable in [&codex, &code_mode_host, &ripgrep, &bubblewrap] {
+            if !executable.exists() {
+                fs::write(executable, "#!/bin/sh\nexit 0\n")?;
+            }
+            fs::set_permissions(executable, fs::Permissions::from_mode(0o700))?;
+        }
+        let package = directory.path().join("codex-package.tar.gz");
         assert!(
             Command::new("tar")
                 .args(["-czf"])
@@ -1282,17 +1042,16 @@ mod tests {
         fs::write(&shim, "#!/bin/sh\nprintf 'codex-cli 0.147.0\\n'\n")?;
         fs::set_permissions(&shim, fs::Permissions::from_mode(0o700))?;
         let root = home.join(".local/lib/codex-shuttle");
-        let release = "codex-0.147.0-runtime";
-        let executor = format!("{}/current/bin/cxs-runtime", root.display());
+        let release = "codex-0.147.0-official";
+        let executor = format!("{}/current/bin/codex", root.display());
         let script = render_install_script(
             "gpu",
             &"a".repeat(64),
-            "codex-cli 0.147.0",
+            "codex-cli 0.147.0-alpha.6.5",
             "codex-cli 0.147.0",
             root.to_str().unwrap(),
             release,
-            Some(package.to_str().unwrap()),
-            "",
+            package.to_str().unwrap(),
             &executor,
             shim.to_str().unwrap(),
             "{\"profile\":\"gpu\"}",
@@ -1308,7 +1067,7 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(root.join("current/bin/cxs-runtime").is_file());
+        assert!(root.join("current/bin/codex").is_file());
         assert_eq!(
             fs::read_to_string(root.join(format!("releases/{release}/executor.path")))?.trim(),
             executor

@@ -27,7 +27,6 @@ jobs:
     outputs:
       codex-version: ${{ steps.version.outputs.codex-version }}
       release-tag: ${{ steps.version.outputs.release-tag }}
-      runtime-release-tag: ${{ steps.runtime.outputs.release-tag }}
       should-publish: ${{ steps.version.outputs.should-publish }}
     steps:
       - uses: actions/checkout@v7
@@ -71,6 +70,11 @@ jobs:
           test -n "$codex_version"
           printf '%s\n' "$codex_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           gh api "repos/openai/codex/git/ref/tags/rust-v${codex_version}" >/dev/null
+          assets=$(gh api "repos/openai/codex/releases/tags/rust-v${codex_version}" --jq '.assets[].name')
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            printf '%s\n' "$assets" | grep -Fqx "codex-package-${target}.tar.gz"
+          done
+          printf '%s\n' "$assets" | grep -Fqx codex-package_SHA256SUMS
 
           if test "$GITHUB_EVENT_NAME" = push; then
             release_tag=$GITHUB_REF_NAME
@@ -85,105 +89,8 @@ jobs:
           echo "codex-version=$codex_version" >> "$GITHUB_OUTPUT"
           echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "should-publish=$should_publish" >> "$GITHUB_OUTPUT"
-      - id: runtime
-        if: steps.version.outputs.should-publish == 'true'
-        env:
-          CODEX_VERSION: ${{ steps.version.outputs.codex-version }}
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.version.outputs.release-tag }}
-        run: |
-          set -euo pipefail
-          runtime_release_tag=
-          suffix="-codex.${CODEX_VERSION}"
-          while read -r candidate; do
-            test -n "$candidate" || continue
-            test "$candidate" != "$RELEASE_TAG" || continue
-            case "$candidate" in
-              *"$suffix") ;;
-              *) continue ;;
-            esac
-
-            git fetch --no-tags origin "refs/tags/${candidate}:refs/tags/${candidate}"
-            if ! git diff --quiet "$candidate" "$GITHUB_SHA" -- \
-              runtime/cxs-runtime \
-              scripts/build-cxs-runtime.sh \
-              .github/workflows/runtime.yml; then
-              echo "Runtime inputs differ from $candidate; skipping it."
-              continue
-            fi
-
-            candidate_dir=$(mktemp -d)
-            valid=true
-            if ! gh release download "$candidate" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern 'cxs-runtime-*.tar.gz' \
-              --pattern SHA256SUMS \
-              --dir "$candidate_dir"; then
-              valid=false
-            fi
-            if test "$valid" = true; then
-              for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-                case "$target" in
-                  x86_64-*) arch=x86_64 ;;
-                  aarch64-*) arch=aarch64 ;;
-                esac
-                name="cxs-runtime-linux-${arch}-codex-${CODEX_VERSION}.tar.gz"
-                if ! test -f "$candidate_dir/$name"; then
-                  name="cxs-runtime-codex-${CODEX_VERSION}-${target}.tar.gz"
-                fi
-                awk -v name="$name" '$2 == name' "$candidate_dir/SHA256SUMS" > "$candidate_dir/runtime.sha256"
-                if ! test -s "$candidate_dir/runtime.sha256" ||
-                  ! (cd "$candidate_dir" && sha256sum --check runtime.sha256); then
-                  valid=false
-                  break
-                fi
-              done
-            fi
-            rm -rf "$candidate_dir"
-
-            if test "$valid" = true; then
-              runtime_release_tag=$candidate
-              echo "Reusing verified runtime assets from $candidate."
-              break
-            fi
-            echo "$candidate has no complete, valid runtime; trying the next Release."
-          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[].tag_name')
-
-          if test -z "$runtime_release_tag"; then
-            echo "No compatible verified runtime Release was found; the runtime will be built."
-          fi
-          echo "release-tag=$runtime_release_tag" >> "$GITHUB_OUTPUT"
-  cache-transport-save:
-    needs: prepare
-    if: needs.prepare.outputs.should-publish == 'true'
-    runs-on: macos-14
-    steps:
-      - name: Create cross-platform cache probe
-        run: |
-          mkdir -p release-staging
-          printf 'codex-shuttle-release-cache\n' > release-staging/cache-transport-probe
-      - uses: actions/cache/save@v5
-        with:
-          path: release-staging/cache-transport-probe
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-transport-probe
-          enableCrossOsArchive: true
-
-  cache-transport-verify:
-    needs: [prepare, cache-transport-save]
-    if: needs.prepare.outputs.should-publish == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cache-transport-probe
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-transport-probe
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - name: Verify cross-platform cache transport
-        run: test "$(cat release-staging/cache-transport-probe)" = codex-shuttle-release-cache
-
   quality:
-    needs: [prepare, cache-transport-verify]
+    needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -200,7 +107,7 @@ jobs:
       - run: cargo test --locked --workspace
 
   mac-cli:
-    needs: [prepare, cache-transport-verify]
+    needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       matrix:
@@ -232,7 +139,7 @@ jobs:
           enableCrossOsArchive: true
 
   linux-shim:
-    needs: [prepare, cache-transport-verify]
+    needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       matrix:
@@ -270,16 +177,8 @@ jobs:
           key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
           enableCrossOsArchive: true
 
-  linux-runtime:
-    needs: [prepare, cache-transport-verify]
-    if: needs.prepare.outputs.should-publish == 'true'
-    uses: ./.github/workflows/runtime.yml
-    with:
-      codex_version: ${{ needs.prepare.outputs.codex-version }}
-      reuse_release_tag: ${{ needs.prepare.outputs.runtime-release-tag }}
-
   publish:
-    needs: [prepare, quality, mac-cli, linux-shim, linux-runtime]
+    needs: [prepare, quality, mac-cli, linux-shim]
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -307,18 +206,6 @@ jobs:
           key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-linux-x86_64
           enableCrossOsArchive: true
           fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
       - run: (cd release-staging && sha256sum cxs-* > SHA256SUMS)
       - name: Publish release assets
         uses: softprops/action-gh-release@v3
@@ -338,12 +225,10 @@ jobs:
 
             ## Installer components
 
-            These files are normally downloaded automatically; they are listed here for offline and manual installation.
+            The shim is downloaded automatically. The matching official Codex package is downloaded directly from [OpenAI Codex Releases](https://github.com/openai/codex/releases).
 
             | File | Purpose |
             | --- | --- |
-            | [`cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-runtime-linux-aarch64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz) | Codex runtime for ARM64 Linux hosts |
-            | [`cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-runtime-linux-x86_64-codex-${{ needs.prepare.outputs.codex-version }}.tar.gz) | Codex runtime for x86_64 Linux hosts |
             | [`cxs-shim-linux-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-aarch64) | SSH/Yamux shim for ARM64 Linux hosts |
             | [`cxs-shim-linux-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-x86_64) | SSH/Yamux shim for x86_64 Linux hosts |
             | [`SHA256SUMS`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/SHA256SUMS) | SHA-256 checksums for every release asset |
@@ -352,7 +237,6 @@ jobs:
           generate_release_notes: true
           files: |
             release-staging/cxs-cli-*
-            release-staging/cxs-runtime-*
             release-staging/cxs-shim-*
             release-staging/SHA256SUMS
       - name: Delete published staging caches
