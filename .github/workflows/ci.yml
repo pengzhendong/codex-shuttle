@@ -11,11 +11,29 @@ on:
 jobs:
   rust:
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.os }}
+        include:
+          - runner: macos-15
+            expected-os: macOS
+            expected-arch: ARM64
+          - runner: ubuntu-24.04
+            expected-os: Linux
+            expected-arch: X64
+          - runner: ubuntu-24.04-arm
+            expected-os: Linux
+            expected-arch: ARM64
+          - runner: windows-2025
+            expected-os: Windows
+            expected-arch: X64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+      - name: Verify native runner architecture
+        shell: bash
+        run: |
+          test "$RUNNER_OS" = "${{ matrix.expected-os }}"
+          test "$RUNNER_ARCH" = "${{ matrix.expected-arch }}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -26,3 +44,31 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+
+  remote-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: remote-e2e-${{ runner.os }}-${{ runner.arch }}
+          add-job-id-key: false
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/codex-shuttle-package
+          key: codex-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/codex-versions.txt') }}
+      - name: Exercise install, bridge, SSH, and doctor end to end
+        shell: bash
+        run: |
+          CODEX_VERSION=$(sed -n '/^[0-9][0-9.]*$/p' runtime/codex-versions.txt | tail -n 1)
+          export CODEX_VERSION
+          export CXS_CI_CACHE_DIR="$RUNNER_TEMP/codex-shuttle-package"
+          bash .github/scripts/test-remote-e2e.sh

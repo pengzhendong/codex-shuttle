@@ -11,7 +11,7 @@ Codex Shuttle should own only the adaptation that is specific to connecting Code
 | JSON and persistent metadata | Serde and `serde_json` | versioned profile/install schemas |
 | Atomic temporary files | `tempfile` | permissions and ownership policy |
 | Cryptographic digest and token comparison | `sha2`, `getrandom`, and `subtle` | artifact identity and handshake fields |
-| Remote execution semantics | OpenAI's official Codex Linux package | version qualification, activation, and relay |
+| Remote execution semantics | OpenAI's official platform Codex package | version qualification, activation, and relay |
 | Artifact transfer | OpenSSH plus `curl` on the target | retry/resume and activation policy |
 | Session archive transfer | OpenSSH plus `tar` | path/size validation and thread-ID deduplication |
 | Codex state repair | `rusqlite` | online backup and schema-aware Provider/CWD updates |
@@ -24,7 +24,7 @@ The small project-owned `SplitIo` adapters exist only because Yamux uses the `fu
 - Maintaining a custom multiplexing frame format.
 - Recreating Codex process, PTY, filesystem, sandbox, approval, or HTTP RPCs.
 - Parsing or proxying arbitrary App Server semantics.
-- Copying desktop Codex credentials or state to Linux.
+- Copying desktop Codex credentials or state to the remote host.
 - Replacing the desktop SQLite database with a remote copy.
 
 The Rust session repair adapts the core approach from the MIT-licensed

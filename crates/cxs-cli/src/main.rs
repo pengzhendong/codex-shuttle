@@ -21,8 +21,8 @@ use cxs_core::{
 use cxs_install::{InstallOptions, RemoteInstall};
 use cxs_probe::{codex_version, local_codex_checks};
 use cxs_ssh::{
-    SshSnapshot, ensure_managed_include, query_remote, render_host, rewrite_managed_config,
-    test_connection,
+    RemoteFacts, SshSnapshot, ensure_managed_include, query_remote, render_host,
+    rewrite_managed_config, test_connection,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -64,7 +64,7 @@ enum Commands {
     List,
     /// Show one profile's state.
     Status { profile: String },
-    /// Check local Codex, SSH, remote Linux, and adapter readiness.
+    /// Check local Codex, SSH, remote host, and adapter readiness.
     Doctor {
         profile: String,
         #[arg(long)]
@@ -79,7 +79,7 @@ enum Commands {
         /// Download official Codex on this desktop, then upload it over SSH.
         #[arg(long)]
         local_download: bool,
-        /// Use a local Linux cxs-shim binary instead of downloading it.
+        /// Use a local remote-host cxs-shim binary instead of downloading it.
         #[arg(long, hide = true)]
         shim: Option<PathBuf>,
     },
@@ -504,12 +504,7 @@ async fn doctor_remote(profile: &Profile) -> Vec<DoctorCheck> {
     checks.push(DoctorCheck::from_result(
         "remote-platform",
         query_remote(&profile.source_host).and_then(|facts| {
-            if facts.kernel != "Linux" {
-                bail!("unsupported kernel {}", facts.kernel);
-            }
-            if !matches!(facts.arch.as_str(), "x86_64" | "aarch64") {
-                bail!("unsupported architecture {}", facts.arch);
-            }
+            cxs_install::remote_target(&facts)?;
             Ok(format!(
                 "{} {} home={}",
                 facts.kernel, facts.arch, facts.home
@@ -1145,7 +1140,7 @@ async fn probe_ready_inner(
             "command": [
                 "/bin/sh",
                 "-c",
-                "printf 'cxs-probe-linux\\n'; pwd; uname -s; uname -m"
+                "printf 'cxs-probe-remote\\n'; pwd; uname -s; uname -m"
             ],
             "cwd": remote_home,
             "timeoutMs": 5000
@@ -1218,16 +1213,12 @@ async fn probe_ready_inner(
                     .pointer("/result/stdout")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
-                if exit_code != Some(0)
-                    || !stdout.lines().any(|line| line == "cxs-probe-linux")
-                    || !stdout.lines().any(|line| line == remote_home)
-                    || !stdout.lines().any(|line| line == "Linux")
-                    || !stdout
-                        .lines()
-                        .any(|line| matches!(line, "aarch64" | "x86_64"))
-                {
+                if exit_code != Some(0) {
                     bail!("remote command/exec returned an invalid result: {message}");
                 }
+                validate_remote_probe_stdout(stdout, remote_home).with_context(|| {
+                    format!("remote command/exec returned an invalid result: {message}")
+                })?;
                 command_ready = true;
             }
             if status_ready && directory_ready && command_ready {
@@ -1257,7 +1248,7 @@ async fn cleanup_remote_probe(
     probe_pid_file: &str,
 ) -> Result<()> {
     let cleanup_command = format!(
-        r#"probe_pid=''; probe_token=''; if [ -f "{probe_pid_file}" ]; then read -r probe_pid probe_token <"{probe_pid_file}" || true; fi; probe_owned=false; case "$probe_pid" in ''|*[!0-9]*) ;; *) case "$probe_token" in ''|*[!0-9A-Za-z_-]*) ;; *) if [ -r "/proc/$probe_pid/environ" ] && tr '\000' '\n' <"/proc/$probe_pid/environ" | grep -Fqx "CXS_PROBE_TOKEN=$probe_token"; then probe_owned=true; fi ;; esac ;; esac; if [ "$probe_owned" = true ]; then kill -TERM "$probe_pid" 2>/dev/null || true; cleanup_tries=0; while kill -0 "$probe_pid" 2>/dev/null && [ "$cleanup_tries" -lt 20 ]; do cleanup_tries=$((cleanup_tries + 1)); sleep 0.1; done; if kill -0 "$probe_pid" 2>/dev/null && [ -r "/proc/$probe_pid/environ" ] && tr '\000' '\n' <"/proc/$probe_pid/environ" | grep -Fqx "CXS_PROBE_TOKEN=$probe_token"; then kill -KILL "$probe_pid" 2>/dev/null || true; fi; fi; rm -f "{probe_control_socket}" "{probe_pid_file}"; rmdir "{probe_control_directory}" 2>/dev/null || true"#
+        r#"probe_pid=''; probe_token=''; if [ -f "{probe_pid_file}" ]; then read -r probe_pid probe_token <"{probe_pid_file}" || true; fi; probe_is_owned() {{ case "$probe_pid" in ''|*[!0-9]*) return 1 ;; esac; case "$probe_token" in ''|*[!0-9A-Za-z_-]*) return 1 ;; esac; probe_command=$(ps eww -p "$probe_pid" -o command= 2>/dev/null || true); case "$probe_command" in *"CXS_PROBE_TOKEN=$probe_token"*) return 0 ;; *) return 1 ;; esac; }}; if probe_is_owned; then kill -TERM "$probe_pid" 2>/dev/null || true; cleanup_tries=0; while kill -0 "$probe_pid" 2>/dev/null && [ "$cleanup_tries" -lt 20 ]; do cleanup_tries=$((cleanup_tries + 1)); sleep 0.1; done; if kill -0 "$probe_pid" 2>/dev/null && probe_is_owned; then kill -KILL "$probe_pid" 2>/dev/null || true; fi; fi; rm -f "{probe_control_socket}" "{probe_pid_file}"; rmdir "{probe_control_directory}" 2>/dev/null || true"#
     );
     let status = tokio::time::timeout(
         Duration::from_secs(10),
@@ -1278,6 +1269,21 @@ async fn cleanup_remote_probe(
     if !status.success() {
         bail!("remote probe cleanup exited with {status}");
     }
+    Ok(())
+}
+
+fn validate_remote_probe_stdout(stdout: &str, remote_home: &str) -> Result<()> {
+    let lines: Vec<_> = stdout.lines().collect();
+    let platform = lines
+        .windows(4)
+        .find(|window| window[0] == "cxs-probe-remote" && window[1] == remote_home)
+        .context("remote probe marker or working directory was missing")?;
+    let facts = RemoteFacts {
+        home: remote_home.to_owned(),
+        kernel: platform[2].to_owned(),
+        arch: platform[3].to_owned(),
+    };
+    cxs_install::remote_target(&facts)?;
     Ok(())
 }
 
@@ -1327,4 +1333,32 @@ fn rewrite_all_ssh_config(store: &ProfileStore) -> Result<()> {
         entries.push((profile, snapshot));
     }
     rewrite_managed_config(&store.paths().managed_ssh_config, &entries)
+}
+
+#[cfg(test)]
+mod remote_probe_tests {
+    use super::validate_remote_probe_stdout;
+
+    #[test]
+    fn accepts_every_supported_remote_probe() {
+        for stdout in [
+            "cxs-probe-remote\n/home/dev\nLinux\nx86_64\n",
+            "noise\ncxs-probe-remote\n/home/dev\nLinux\naarch64\n",
+            "cxs-probe-remote\n/home/dev\nDarwin\narm64\n",
+        ] {
+            validate_remote_probe_stdout(stdout, "/home/dev").unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_or_malformed_remote_probe() {
+        assert!(
+            validate_remote_probe_stdout(
+                "cxs-probe-remote\n/Users/dev\nDarwin\nx86_64\n",
+                "/Users/dev"
+            )
+            .is_err()
+        );
+        assert!(validate_remote_probe_stdout("Linux\naarch64\n", "/home/dev").is_err());
+    }
 }

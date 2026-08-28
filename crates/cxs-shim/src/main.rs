@@ -1,6 +1,6 @@
 #[cfg(not(unix))]
 fn main() {
-    eprintln!("cxs-shim is a Linux remote component; build and run cxs on Windows instead");
+    eprintln!("cxs-shim is a Unix remote component; build and run cxs on Windows instead");
 }
 
 #[cfg(unix)]
@@ -582,7 +582,27 @@ mod unix {
             .any(|argument| argument == b"__cxs-agent")
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn validate_agent_process(pid: Pid) -> Result<()> {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-p", &pid.as_raw().to_string(), "-o", "command="])
+            .output()
+            .context("could not inspect the active cxs-agent process")?;
+        let command = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success()
+            || !command
+                .split_ascii_whitespace()
+                .any(|argument| argument == "__cxs-agent")
+        {
+            bail!(
+                "refusing to replace PID {} because it is not cxs-agent",
+                pid.as_raw()
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[allow(clippy::unnecessary_wraps)]
     fn validate_agent_process(_pid: Pid) -> Result<()> {
         Ok(())
@@ -1000,7 +1020,37 @@ mod unix {
             Ok(())
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(target_os = "macos")]
+        #[tokio::test]
+        async fn macos_live_agent_socket_is_replaced_end_to_end() -> Result<()> {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("agent.sock");
+            let executable = std::env::current_exe()?;
+            let mut agent = std::process::Command::new("/bin/bash")
+                .args([
+                    "-c",
+                    "exec -a __cxs-agent \"$1\" --ignored --exact unix::tests::replacement_agent_fixture",
+                    "cxs-test",
+                ])
+                .arg(&executable)
+                .env("CXS_TEST_AGENT_SOCKET", &path)
+                .spawn()?;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while (!path.exists() || !path.with_extension("pid").exists())
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            assert!(path.exists(), "fixture did not create its agent socket");
+            prepare_agent_socket(&path, true).await?;
+            let status = agent.wait()?;
+            assert_eq!(status.signal(), Some(Signal::SIGTERM as i32));
+            assert!(!path.exists());
+            assert!(!path.with_extension("pid").exists());
+            Ok(())
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         #[test]
         #[ignore = "helper process for live_agent_socket_is_replaced_end_to_end"]
         fn replacement_agent_fixture() -> Result<()> {
@@ -1009,6 +1059,7 @@ mod unix {
                     .context("CXS_TEST_AGENT_SOCKET is required for the replacement fixture")?,
             );
             let _listener = std::os::unix::net::UnixListener::bind(&path)?;
+            write_agent_pid(&path.with_extension("pid"))?;
             loop {
                 std::thread::sleep(Duration::from_secs(60));
             }

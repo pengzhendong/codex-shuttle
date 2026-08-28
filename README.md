@@ -2,7 +2,7 @@
 
 # 🚀 Codex Shuttle
 
-**Keep the Codex desktop experience on macOS or Windows. Run the work on Linux over SSH.**
+**Keep the Codex desktop experience on macOS or Windows. Run the work on Linux or Apple Silicon macOS over SSH.**
 
 [简体中文](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Troubleshooting](docs/troubleshooting.md) · [Releases](https://github.com/pengzhendong/codex-shuttle/releases)
 
@@ -13,22 +13,23 @@
 [![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-000000?logo=apple)](#requirements)
 [![Windows](https://img.shields.io/badge/Windows-x86__64-0078d4?logo=windows)](#requirements)
 [![Linux](https://img.shields.io/badge/remote%20Linux-arm64%20%7C%20x86__64-fcc624?logo=linux&logoColor=black)](#requirements)
+[![macOS server](https://img.shields.io/badge/remote%20macOS-Apple%20Silicon-000000?logo=apple)](#requirements)
 
 > [!WARNING]
 > Unofficial and under active development. Codex Shuttle depends on version-sensitive Codex App Server and experimental Exec Server interfaces.
 
 </div>
 
-Codex Shuttle (`cxs`) connects the Codex desktop app to an existing Linux SSH host. Threads, account state, and the UI stay on your desktop; shells, files, search, Git discovery, PTYs, tests, and sandboxed processes run on Linux.
+Codex Shuttle (`cxs`) connects the Codex desktop app to an existing Linux or Apple Silicon macOS SSH host. Threads, account state, and the UI stay on your desktop; shells, files, search, Git discovery, PTYs, and tests run on the remote host.
 
 It uses your existing OpenSSH configuration and one ordinary SSH stdio connection—no SSH daemon replacement, TCP forwarding, or remote Codex login required.
 
 ## Why Shuttle?
 
 - **Native desktop workflow** — keep the Codex app, local account, and local thread database.
-- **Real remote paths** — browse and open Linux folders instead of mirrored local paths.
-- **Remote execution** — commands, terminals, file operations, search, Git metadata, and sandboxing run on Linux.
-- **Official remote Codex** — use OpenAI's version-matched Linux package instead of a Shuttle-maintained fork.
+- **Real remote paths** — browse and open remote folders instead of mirrored local paths.
+- **Remote execution** — commands, terminals, file operations, search, and Git metadata run on the remote host; Linux also uses the packaged sandbox.
+- **Official remote Codex** — use OpenAI's version-matched package instead of a Shuttle-maintained fork.
 - **One SSH connection** — Yamux carries App, Exec, and Host channels over a single SSH stdin/stdout stream.
 - **Session migration** — pull server-created sessions to the desktop and repair Provider visibility metadata.
 - **Version-bound releases** — new stable OpenAI Codex source tags are checked daily; old Shuttle releases remain available.
@@ -37,9 +38,11 @@ It uses your existing OpenSSH configuration and one ordinary SSH stdio connectio
 
 | Local | Remote |
 | --- | --- |
-| macOS on Apple Silicon/Intel, or Windows on x86_64 | Linux on arm64 or x86_64 |
+| macOS on Apple Silicon/Intel, or Windows on x86_64 | Linux on arm64/x86_64, or Apple Silicon macOS |
 | Codex desktop app installed | OpenSSH access with non-interactive key authentication |
-| OpenSSH client | `sh`, `curl`, `tar`, and `sha256sum` |
+| OpenSSH client | `sh`, `curl`, `tar`, and `sha256sum` (Linux) or `shasum` (macOS) |
+
+Intel macOS is supported as a desktop client, but not as a remote server.
 
 Shuttle uses the Codex binary bundled with the desktop app; it never resolves `codex` from `PATH`. On macOS this is `/Applications/ChatGPT.app/Contents/Resources/codex`. On Windows, Shuttle selects the newest `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`. Set `CXS_CODEX_PATH` to override discovery. The selected Shuttle release must match that binary's public source baseline. For example, a desktop build reporting `0.147.0-alpha.6.5` uses the Shuttle release for Codex `0.147.0`.
 
@@ -74,18 +77,18 @@ You can also download and verify a binary manually from [Releases](https://githu
 Create or reuse a normal host alias in `~/.ssh/config`, then confirm key-based login works without a prompt:
 
 ```bash
-ssh -o BatchMode=yes my-linux-host true
+ssh -o BatchMode=yes my-remote-host true
 ```
 
 ### 3. Add and install the host
 
 ```bash
-cxs add my-linux-host --name devbox
+cxs add my-remote-host --name devbox
 cxs install devbox
 cxs doctor devbox
 ```
 
-Shuttle creates the app-facing SSH alias `cxs-devbox`. In the Codex desktop app, choose that host and open a Linux path such as `/home/me/project`.
+Shuttle creates the app-facing SSH alias `cxs-devbox`. In the Codex desktop app, choose that host and open a remote path such as `/home/me/project` or `/Users/me/project`.
 
 The server downloads the matching official Codex package by default. To download it on the desktop and upload it over SSH instead:
 
@@ -101,7 +104,7 @@ cxs install devbox --local-download
 | `cxs install <profile>` | Install matching official Codex and the Shuttle shim |
 | `cxs update <profile>` | Update artifacts for the current local Codex |
 | `cxs up <profile>` / `cxs down <profile>` | Start or stop the local bridge |
-| `cxs doctor <profile> [--json]` | Verify Codex, SSH, remote filesystem, and Linux command execution |
+| `cxs doctor <profile> [--json]` | Verify Codex, SSH, remote filesystem, and remote command execution |
 | `cxs list` / `cxs status <profile>` | Inspect configured profiles |
 | `cxs config <profile>` | Print the generated SSH host block |
 | `cxs rollback <profile>` | Switch back to the previous remote release |
@@ -140,12 +143,12 @@ Codex desktop app
  remote cxs-shim ═══ one SSH stdio connection / Yamux ═══ local cxs-bridge
         │                                                    │
         ├── version-matched Codex Exec Server ◄── exec ─────┤
-        └── restricted Linux App Server       ◄── host ─────┤
+        └── restricted remote App Server      ◄── host ─────┤
                                                              └── local App Server
                                                                   owns sessions
 ```
 
-The local App Server remains authoritative for threads and account state. Shuttle registers a Linux execution environment and routes host-facing filesystem/process RPCs to a restricted Linux App Server. The remote executor is OpenAI's official [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases), including its maintained App Server, Exec Server, sandbox, code-mode host, and ripgrep components. Shuttle adds only the SSH/Yamux shim.
+The local App Server remains authoritative for threads and account state. Shuttle registers a remote execution environment and routes host-facing filesystem/process RPCs to a restricted remote App Server. The remote executor is OpenAI's official [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases), including its maintained App Server, Exec Server, platform components, code-mode host, and ripgrep. Shuttle adds only the SSH/Yamux shim.
 
 The shim intercepts only the desktop App Server bootstrap and Shuttle's hidden agent command. Other `codex` CLI commands are delegated to the managed official binary.
 
@@ -155,8 +158,10 @@ Read [Architecture](docs/architecture.md) for protocol details and [Dependency b
 
 GitHub Actions checks for stable OpenAI `rust-vX.Y.Z` tags daily at 00:17 UTC and
 processes every unpublished version in order. A version-bound Shuttle release
-is published only after workspace tests, both macOS builds, the Windows build, and both Linux shims
-succeed. The matching official Linux Codex package must already exist upstream.
+is published only after formatting, Clippy, and all workspace tests pass on macOS ARM64,
+Windows x64, Linux x64, and Linux ARM64, and real-package SSH end-to-end tests pass on
+every supported server platform. The matching official Codex packages and Shuttle shims
+must also build successfully.
 These gates prove build compatibility;
 `cxs doctor` is still the live end-to-end check for a specific desktop and server.
 A failed build creates no partial release and is retried by the next scheduled
@@ -167,7 +172,7 @@ Each released desktop CLI embeds its complete Shuttle release tag. It downloads 
 ## Security model
 
 - OpenSSH remains responsible for encryption, host keys, identities, agents, and jump hosts.
-- No Codex login credential is copied to Linux.
+- No Codex login credential is copied to the remote host.
 - Remote Exec and Host App Servers use separate private `CODEX_HOME` directories.
 - Official Codex and Shuttle shim artifacts are verified with SHA-256 before activation; `doctor` also checks the installed executor digest.
 - The local bridge uses a private local endpoint (Unix socket on macOS, loopback on Windows) and a per-profile random token.

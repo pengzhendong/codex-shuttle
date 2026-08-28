@@ -11,6 +11,7 @@ anyhow.workspace = true
 clap.workspace = true
 cxs-ssh = { path = "../cxs-ssh" }
 cxs-core = { path = "../cxs-core" }
+cxs-install = { path = "../cxs-install" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

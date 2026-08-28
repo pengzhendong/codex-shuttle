@@ -2,6 +2,18 @@
 
 All notable changes to Codex Shuttle are documented here. The project follows semantic versioning once a stable public API exists.
 
+## 0.3.0 - 2026-08-29
+
+- Added Apple Silicon macOS as a supported remote server using OpenAI's official
+  `aarch64-apple-darwin` Codex package and a native `cxs-shim-macos-aarch64`.
+- Added portable remote SHA-256 verification with `sha256sum` or `shasum` and
+  macOS-safe agent process replacement and probe cleanup.
+- Replaced deprecated macOS runner coverage with native `macos-15` ARM64 jobs.
+- Expanded CI and release gates to run formatting, Clippy, and all workspace
+  tests on Windows x64, Linux x64, Linux ARM64, and macOS ARM64.
+- Added real-package SSH end-to-end tests on every supported remote platform,
+  covering install, bridge startup, doctor, status, shutdown, and removal.
+
 ## 0.1.0 - Unreleased
 
 - Added the `cxs` profile, install, diagnostics, lifecycle, rollback, and removal CLI.

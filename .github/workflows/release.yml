@@ -71,7 +71,7 @@ jobs:
           printf '%s\n' "$codex_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           gh api "repos/openai/codex/git/ref/tags/rust-v${codex_version}" >/dev/null
           assets=$(gh api "repos/openai/codex/releases/tags/rust-v${codex_version}" --jq '.assets[].name')
-          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin; do
             printf '%s\n' "$assets" | grep -Fqx "codex-package-${target}.tar.gz"
           done
           printf '%s\n' "$assets" | grep -Fqx codex-package_SHA256SUMS
@@ -92,9 +92,30 @@ jobs:
   quality:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            expected-os: macOS
+            expected-arch: ARM64
+          - runner: ubuntu-24.04
+            expected-os: Linux
+            expected-arch: X64
+          - runner: ubuntu-24.04-arm
+            expected-os: Linux
+            expected-arch: ARM64
+          - runner: windows-2025
+            expected-os: Windows
+            expected-arch: X64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+      - name: Verify native runner architecture
+        shell: bash
+        run: |
+          test "$RUNNER_OS" = "${{ matrix.expected-os }}"
+          test "$RUNNER_ARCH" = "${{ matrix.expected-arch }}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -106,6 +127,35 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
 
+  remote-e2e:
+    needs: prepare
+    if: needs.prepare.outputs.should-publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: release-e2e-${{ runner.os }}-${{ runner.arch }}
+          add-job-id-key: false
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/codex-shuttle-package
+          key: codex-package-${{ runner.os }}-${{ runner.arch }}-${{ needs.prepare.outputs.codex-version }}
+      - name: Exercise install, bridge, SSH, and doctor end to end
+        shell: bash
+        env:
+          CODEX_VERSION: ${{ needs.prepare.outputs.codex-version }}
+          CXS_CI_CACHE_DIR: ${{ runner.temp }}/codex-shuttle-package
+        run: bash .github/scripts/test-remote-e2e.sh
+
   mac-cli:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
@@ -116,7 +166,7 @@ jobs:
             asset: cxs-cli-macos-aarch64
           - target: x86_64-apple-darwin
             asset: cxs-cli-macos-x86_64
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -201,8 +251,31 @@ jobs:
           key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
           enableCrossOsArchive: true
 
+  macos-shim:
+    needs: prepare
+    if: needs.prepare.outputs.should-publish == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: macos-shim-aarch64
+          add-job-id-key: false
+      - run: cargo build --locked --release -p cxs-shim --target aarch64-apple-darwin
+      - run: |
+          mkdir -p release-staging
+          cp target/aarch64-apple-darwin/release/cxs-shim release-staging/cxs-shim-macos-aarch64
+      - uses: actions/cache/save@v5
+        with:
+          path: release-staging/cxs-shim-macos-aarch64
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-macos-aarch64
+          enableCrossOsArchive: true
+
   publish:
-    needs: [prepare, quality, mac-cli, windows-cli, linux-shim]
+    needs: [prepare, quality, remote-e2e, mac-cli, windows-cli, linux-shim, macos-shim]
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -236,6 +309,12 @@ jobs:
           key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-linux-x86_64
           enableCrossOsArchive: true
           fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-shim-macos-aarch64
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-macos-aarch64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
       - run: (cd release-staging && sha256sum cxs-* > SHA256SUMS)
       - name: Publish release assets
         uses: softprops/action-gh-release@v3
@@ -246,7 +325,7 @@ jobs:
           body: |
             ## Downloads
 
-            Most users only need the CLI for their desktop platform. `cxs install` automatically selects and installs the matching Linux components.
+            Most users only need the CLI for their desktop platform. `cxs install` automatically selects and installs the matching Linux or Apple Silicon macOS components.
 
             | macOS | Download | Purpose |
             | --- | --- | --- |
@@ -265,6 +344,7 @@ jobs:
             | --- | --- |
             | [`cxs-shim-linux-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-aarch64) | SSH/Yamux shim for ARM64 Linux hosts |
             | [`cxs-shim-linux-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-x86_64) | SSH/Yamux shim for x86_64 Linux hosts |
+            | [`cxs-shim-macos-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-macos-aarch64) | SSH/Yamux shim for Apple Silicon macOS hosts |
             | [`SHA256SUMS`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/SHA256SUMS) | SHA-256 checksums for every release asset |
 
             See the [installation guide](https://github.com/${{ github.repository }}#installation) for the recommended setup.

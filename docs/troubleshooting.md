@@ -28,7 +28,7 @@ Shuttle writes only its managed `cxs-*` aliases. It does not rewrite the origina
 
 ## The Codex app shows a local desktop path
 
-Choose the generated host alias, normally `cxs-<profile>`, and open a Linux path such as `/home/me/project`. A project opened through the ordinary local connection remains local; Shuttle does not reinterpret an existing desktop path as a remote one.
+Choose the generated host alias, normally `cxs-<profile>`, and open a remote path such as `/home/me/project` on Linux or `/Users/me/project` on macOS. A project opened through the ordinary local connection remains local; Shuttle does not reinterpret an existing desktop path as a remote one.
 
 ## No matching official Codex release
 
@@ -46,7 +46,7 @@ Close Codex before changing its local rollout or SQLite state, then run:
 cxs repair
 ```
 
-The command creates a backup before updating matching Provider and working-directory metadata. If the session exists only on the Linux host, import it first:
+The command creates a backup before updating matching Provider and working-directory metadata. If the session exists only on the remote host, import it first:
 
 ```bash
 cxs sync <profile>

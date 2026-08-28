@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     let remote = arguments.host.map(|host| match query_remote(&host) {
         Ok(facts) => RemoteReport {
             host,
-            passed: facts.kernel == "Linux" && matches!(facts.arch.as_str(), "x86_64" | "aarch64"),
+            passed: cxs_install::remote_target(&facts).is_ok(),
             detail: format!(
                 "kernel={} arch={} home={}",
                 facts.kernel, facts.arch, facts.home

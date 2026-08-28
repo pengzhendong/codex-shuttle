@@ -16,6 +16,16 @@ const CODEX_RELEASES: &str = "https://github.com/openai/codex/releases/download"
 const EXECUTOR_SHA256_PLACEHOLDER: &str = "CXS_EXECUTOR_SHA256_PLACEHOLDER";
 const REMOTE_LAYOUT_VERSION: u32 = 5;
 const REMOTE_INSPECT_COMMAND: &str = "set -eu; cat \"$HOME/.config/codex-shuttle/install.json\"; printf '\\n'; \"$HOME/.local/bin/codex\" --version >&2; \"${SHELL:-/bin/sh}\" -l -i -c 'command -v codex >/dev/null' >/dev/null 2>&1";
+const REMOTE_SHA256_FUNCTION: &str = r#"sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "remote host has neither sha256sum nor shasum" >&2
+    return 127
+  fi
+}"#;
 
 fn shuttle_release_tag() -> &'static str {
     option_env!("CXS_RELEASE_TAG").unwrap_or(concat!("v", env!("CARGO_PKG_VERSION")))
@@ -157,15 +167,39 @@ pub fn codex_source_version(version_output: &str) -> Result<&str> {
         .map_or(version, |(source_version, _)| source_version))
 }
 
-pub fn linux_target(facts: &RemoteFacts) -> Result<&'static str> {
-    if facts.kernel != "Linux" {
-        bail!("unsupported remote kernel {}", facts.kernel);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RemotePlatform {
+    target: &'static str,
+    shim_asset: &'static str,
+    requires_bwrap: bool,
+}
+
+fn remote_platform(facts: &RemoteFacts) -> Result<RemotePlatform> {
+    match (facts.kernel.as_str(), facts.arch.as_str()) {
+        ("Linux", "x86_64" | "amd64") => Ok(RemotePlatform {
+            target: "x86_64-unknown-linux-musl",
+            shim_asset: "cxs-shim-linux-x86_64",
+            requires_bwrap: true,
+        }),
+        ("Linux", "aarch64" | "arm64") => Ok(RemotePlatform {
+            target: "aarch64-unknown-linux-musl",
+            shim_asset: "cxs-shim-linux-aarch64",
+            requires_bwrap: true,
+        }),
+        ("Darwin", "aarch64" | "arm64") => Ok(RemotePlatform {
+            target: "aarch64-apple-darwin",
+            shim_asset: "cxs-shim-macos-aarch64",
+            requires_bwrap: false,
+        }),
+        ("Darwin", arch) => bail!(
+            "unsupported remote macOS architecture {arch}; only Apple Silicon arm64 is supported"
+        ),
+        (kernel, arch) => bail!("unsupported remote platform {kernel} {arch}"),
     }
-    match facts.arch.as_str() {
-        "x86_64" | "amd64" => Ok("x86_64-unknown-linux-musl"),
-        "aarch64" | "arm64" => Ok("aarch64-unknown-linux-musl"),
-        other => bail!("unsupported remote architecture {other}"),
-    }
+}
+
+pub fn remote_target(facts: &RemoteFacts) -> Result<&'static str> {
+    remote_platform(facts).map(|platform| platform.target)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -175,13 +209,11 @@ pub fn install(
     facts: &RemoteFacts,
     options: &InstallOptions,
 ) -> Result<InstallRecord> {
-    let target = linux_target(facts)?;
+    let platform = remote_platform(facts)?;
+    let target = platform.target;
     let version = codex_source_version(&profile.codex_version)?;
     let temporary = tempfile::tempdir().context("could not create installer workspace")?;
     let root = format!("{}/.local/lib/codex-shuttle", facts.home);
-    let arch = target
-        .split_once('-')
-        .map_or(target, |(architecture, _)| architecture);
     let package_name = format!("codex-package-{target}.tar.gz");
     let remote_package = format!("/tmp/cxs-{}-codex.tar.gz", profile.name);
     let remote_package_partial = format!("{remote_package}.partial");
@@ -208,13 +240,13 @@ pub fn install(
         }
     };
 
-    let shim_name = format!("cxs-shim-linux-{arch}");
+    let shim_name = platform.shim_asset;
     let shim = match &options.shim {
         Some(path) => canonical_file(path, "Shuttle shim")?,
         None => download_shim(
             &temporary,
             release_tag,
-            &shim_name,
+            shim_name,
             &options.shuttle_release_base,
         )?,
     };
@@ -317,6 +349,7 @@ pub fn install(
         &remote_shim,
         &config_json,
         &metadata_json,
+        platform.requires_bwrap,
     );
     let result = run_ssh_script(&profile.source_host, &script);
     let _ = cleanup_remote_temp(
@@ -385,16 +418,17 @@ destination={destination}
 temporary="$destination.partial"
 manifest="$destination.SHA256SUMS"
 trap 'unlink "$manifest" 2>/dev/null || true' EXIT HUP INT TERM
+{sha256_function}
 curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --silent --show-error --output "$manifest" {manifest_url}
 expected=$(awk -v wanted={package_name} '$2 == wanted || $2 == "*" wanted {{ print $1; exit }}' "$manifest")
 test -n "$expected" || {{ echo "official checksum manifest did not contain the package" >&2; exit 1; }}
 if test -f "$destination"; then
-  actual=$(sha256sum "$destination" | awk '{{print $1}}')
+  actual=$(sha256_file "$destination")
   if test "$actual" = "$expected"; then printf '%s\n' "$expected"; exit 0; fi
   unlink "$destination"
 fi
 curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --silent --show-error --continue-at - --output "$temporary" {url}
-actual=$(sha256sum "$temporary" | awk '{{print $1}}')
+actual=$(sha256_file "$temporary")
 test "$actual" = "$expected" || {{ unlink "$temporary"; echo "official Codex package checksum mismatch" >&2; exit 1; }}
 mv "$temporary" "$destination"
 printf '%s\n' "$expected"
@@ -403,6 +437,7 @@ printf '%s\n' "$expected"
         manifest_url = shell_quote(manifest_url),
         package_name = shell_quote(package_name),
         url = shell_quote(url),
+        sha256_function = REMOTE_SHA256_FUNCTION,
     );
     let output = run_ssh_script_with_output(host, &script)
         .context("could not download the verified official Codex package")?;
@@ -458,7 +493,7 @@ pub fn verify_executor(profile: &Profile, install: &RemoteInstall) -> Result<()>
         String::new,
         |expected| {
             format!(
-                "actual=$(sha256sum \"$executor\" | awk '{{print $1}}')\ntest \"$actual\" = {} || {{ echo \"remote executor checksum changed\" >&2; exit 1; }}",
+                "{REMOTE_SHA256_FUNCTION}\nactual=$(sha256_file \"$executor\")\ntest \"$actual\" = {} || {{ echo \"remote executor checksum changed\" >&2; exit 1; }}",
                 shell_quote(expected)
             )
         },
@@ -563,7 +598,7 @@ fn download_shim(
         &sums,
     )
     .with_context(|| {
-        "could not download the Shuttle shim manifest; for a source checkout, build a Linux shim and pass --shim"
+        "could not download the Shuttle shim manifest; for a source checkout, build the remote shim and pass --shim"
     })?;
     let expected = checksum_from_file(&sums, shim_name)?;
     let shim = temporary.path().join(shim_name);
@@ -681,7 +716,13 @@ fn render_install_script(
     shim: &str,
     config_json: &str,
     metadata_json: &str,
+    requires_bwrap: bool,
 ) -> String {
+    let sandbox_check = if requires_bwrap {
+        r#"test -x "$stage/codex-resources/bwrap" || { echo "official Linux package has no bubblewrap" >&2; exit 1; }"#
+    } else {
+        ""
+    };
     format!(
         r#"set -eu
 umask 077
@@ -697,6 +738,7 @@ package={package}
 shim={shim}
 config_dir="$HOME/.config/codex-shuttle"
 owner_file="$config_dir/owner"
+{sha256_function}
 if test -f "$owner_file"; then
   owner=$(cat "$owner_file")
   test "$owner" = "$profile" || {{ echo "remote Shuttle install belongs to profile $owner" >&2; exit 1; }}
@@ -715,12 +757,12 @@ executor_probe="$stage/bin/codex"
 test -x "$executor_probe" || {{ echo "official package has no executable bin/codex" >&2; exit 1; }}
 test -x "$stage/bin/codex-code-mode-host" || {{ echo "official package has no code mode host" >&2; exit 1; }}
 test -x "$stage/codex-path/rg" || {{ echo "official package has no bundled ripgrep" >&2; exit 1; }}
-test -x "$stage/codex-resources/bwrap" || {{ echo "official Linux package has no bubblewrap" >&2; exit 1; }}
+{sandbox_check}
 install -m 0700 "$shim" "$stage/cxs-shim"
 actual_version=$("$executor_probe" --version)
 test "$actual_version" = "$expected_version" || test "$actual_version" = "$expected_profile_version" || {{ echo "Codex package version mismatch: $actual_version" >&2; exit 1; }}
 "$executor_probe" exec-server --help >/dev/null 2>&1 || {{ echo "Codex executor has no exec-server command" >&2; exit 1; }}
-executor_sha256=$(sha256sum "$executor_probe" | awk '{{print $1}}')
+executor_sha256=$(sha256_file "$executor_probe")
 cat > "$stage/shim.json" <<'CXS_CONFIG'
 {config_json}
 CXS_CONFIG
@@ -794,6 +836,8 @@ test -x "$executor_installed" || {{ echo "configured Codex executor is not execu
         shim = shell_quote(shim),
         package = shell_quote(package),
         executor_sha256_placeholder = EXECUTOR_SHA256_PLACEHOLDER,
+        sha256_function = REMOTE_SHA256_FUNCTION,
+        sandbox_check = sandbox_check,
     )
 }
 
@@ -860,6 +904,46 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn maps_every_supported_remote_target() {
+        for (kernel, arch, expected) in [
+            ("Linux", "x86_64", "x86_64-unknown-linux-musl"),
+            ("Linux", "amd64", "x86_64-unknown-linux-musl"),
+            ("Linux", "aarch64", "aarch64-unknown-linux-musl"),
+            ("Linux", "arm64", "aarch64-unknown-linux-musl"),
+            ("Darwin", "aarch64", "aarch64-apple-darwin"),
+            ("Darwin", "arm64", "aarch64-apple-darwin"),
+        ] {
+            let facts = RemoteFacts {
+                home: "/remote/home".to_owned(),
+                kernel: kernel.to_owned(),
+                arch: arch.to_owned(),
+            };
+            assert_eq!(remote_target(&facts).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_remote_targets() {
+        for (kernel, arch) in [
+            ("Darwin", "x86_64"),
+            ("Windows_NT", "x86_64"),
+            ("Linux", "riscv64"),
+        ] {
+            let facts = RemoteFacts {
+                home: "/remote/home".to_owned(),
+                kernel: kernel.to_owned(),
+                arch: arch.to_owned(),
+            };
+            assert!(remote_target(&facts).is_err());
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -882,18 +966,28 @@ mod tests {
     }
 
     #[test]
-    fn maps_supported_linux_targets() {
-        let facts = RemoteFacts {
-            home: "/home/dev".to_owned(),
-            kernel: "Linux".to_owned(),
-            arch: "aarch64".to_owned(),
-        };
-        assert_eq!(linux_target(&facts).unwrap(), "aarch64-unknown-linux-musl");
+    fn quotes_shell_values() {
+        assert_eq!(shell_quote("a'b"), "'a'\"'\"'b'");
     }
 
     #[test]
-    fn quotes_shell_values() {
-        assert_eq!(shell_quote("a'b"), "'a'\"'\"'b'");
+    fn macos_install_script_uses_shasum_without_requiring_bubblewrap() {
+        let script = render_install_script(
+            "mac",
+            &"a".repeat(64),
+            "codex-cli 0.150.1",
+            "codex-cli 0.150.1",
+            "/Users/dev/.local/lib/codex-shuttle",
+            "codex-0.150.1-test",
+            "/tmp/codex.tar.gz",
+            "/Users/dev/.local/lib/codex-shuttle/current/bin/codex",
+            "/tmp/cxs-shim",
+            "{\"profile\":\"mac\"}",
+            &format!(r#"{{"executor_sha256":"{EXECUTOR_SHA256_PLACEHOLDER}"}}"#),
+            false,
+        );
+        assert!(script.contains("shasum -a 256"));
+        assert!(!script.contains("official Linux package has no bubblewrap"));
     }
 
     #[test]
@@ -1069,6 +1163,7 @@ mod tests {
             shim.to_str().unwrap(),
             "{\"profile\":\"gpu\"}",
             &metadata_json,
+            true,
         );
         let output = Command::new("sh")
             .env("HOME", &home)

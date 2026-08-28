@@ -2,7 +2,7 @@
 
 # 🚀 Codex Shuttle
 
-**在 macOS 或 Windows 上保留 Codex 桌面体验，把实际工作放到 Linux 服务器执行。**
+**在 macOS 或 Windows 上保留 Codex 桌面体验，把实际工作放到 Linux 或 Apple Silicon macOS 服务器执行。**
 
 [English](README.md) · [架构](docs/architecture.md) · [故障排查](docs/troubleshooting.md) · [版本发布](https://github.com/pengzhendong/codex-shuttle/releases)
 
@@ -13,33 +13,36 @@
 [![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-000000?logo=apple)](#环境要求)
 [![Windows](https://img.shields.io/badge/Windows-x86__64-0078d4?logo=windows)](#环境要求)
 [![Linux](https://img.shields.io/badge/远程%20Linux-arm64%20%7C%20x86__64-fcc624?logo=linux&logoColor=black)](#环境要求)
+[![macOS 服务器](https://img.shields.io/badge/远程%20macOS-Apple%20Silicon-000000?logo=apple)](#环境要求)
 
 > [!WARNING]
 > 这是非官方且仍在积极开发的项目，依赖版本敏感的 Codex App Server 和实验性的 Exec Server 接口。
 
 </div>
 
-Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux SSH 主机。会话、账号状态和界面留在本地桌面；Shell、文件读写、搜索、Git 探测、PTY、测试和沙箱进程在 Linux 上运行。
+Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux 或 Apple Silicon macOS SSH 主机。会话、账号状态和界面留在本地桌面；Shell、文件读写、搜索、Git 探测、PTY 和测试在远程主机运行。
 
 它复用现有 OpenSSH 配置，通过一条普通 SSH stdio 连接工作；不替换 SSH 服务、不需要 TCP 转发，也不需要把 Codex 登录凭据放到服务器。
 
 ## 为什么使用 Shuttle？
 
 - **原生桌面体验**：继续使用 Codex App、本地账号和本地会话库。
-- **真正的远程路径**：直接浏览和打开 Linux 目录，不再显示伪装的本地路径。
-- **远程执行**：命令、终端、文件操作、搜索、Git 元数据和沙箱都在 Linux 上运行。
-- **官方远程 Codex**：直接使用 OpenAI 发布的版本匹配 Linux 包，不维护 Shuttle 私有分支。
+- **真正的远程路径**：直接浏览和打开远程目录，不再显示伪装的本地路径。
+- **远程执行**：命令、终端、文件操作、搜索和 Git 元数据都在远程主机运行；Linux 还使用官方包内沙箱。
+- **官方远程 Codex**：直接使用 OpenAI 发布的版本匹配包，不维护 Shuttle 私有分支。
 - **单条 SSH 连接**：Yamux 在一条 SSH stdin/stdout 上承载 App、Exec、Host 三类通道。
 - **会话迁移**：把服务器创建的 session 拉回桌面端，并修复 Provider 导致的不可见问题。
 - **版本绑定发布**：每天检测官方稳定源码版本，同时永久保留旧版 Release。
 
 ## 环境要求
 
-| 本地桌面 | Linux 远程 |
+| 本地桌面 | 远程服务器 |
 | --- | --- |
-| Apple Silicon/Intel macOS，或 x86_64 Windows | arm64 或 x86_64 Linux |
+| Apple Silicon/Intel macOS，或 x86_64 Windows | arm64/x86_64 Linux，或 Apple Silicon macOS |
 | 已安装 Codex 桌面 App | 支持免交互密钥登录的 OpenSSH |
-| OpenSSH 客户端 | `sh`、`curl`、`tar`、`sha256sum` |
+| OpenSSH 客户端 | `sh`、`curl`、`tar`，以及 Linux 的 `sha256sum` 或 macOS 的 `shasum` |
+
+Intel macOS 可作为桌面客户端，但不支持作为远程服务器。
 
 Shuttle 始终使用桌面 App 自带的 Codex，不会从 `PATH` 查找 `codex`。macOS 路径为 `/Applications/ChatGPT.app/Contents/Resources/codex`；Windows 会自动选择最新的 `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`。可以用 `CXS_CODEX_PATH` 覆盖自动发现。Shuttle Release 必须匹配这个内置二进制的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
 
@@ -74,18 +77,18 @@ Windows 安装器会把 `cxs.exe` 放到 `%LOCALAPPDATA%\Programs\codex-shuttle\
 在 `~/.ssh/config` 中创建或复用普通主机别名，并确认密钥登录无需输入密码：
 
 ```bash
-ssh -o BatchMode=yes my-linux-host true
+ssh -o BatchMode=yes my-remote-host true
 ```
 
 ### 3. 添加并安装主机
 
 ```bash
-cxs add my-linux-host --name devbox
+cxs add my-remote-host --name devbox
 cxs install devbox
 cxs doctor devbox
 ```
 
-Shuttle 会生成给 App 使用的 SSH 别名 `cxs-devbox`。在 Codex 桌面 App 中选择该主机，再打开 `/home/me/project` 这样的 Linux 路径。
+Shuttle 会生成给 App 使用的 SSH 别名 `cxs-devbox`。在 Codex 桌面 App 中选择该主机，再打开 `/home/me/project` 或 `/Users/me/project` 这样的远程路径。
 
 默认由服务器下载匹配的官方 Codex 包。如果希望先在桌面端下载再通过 SSH 上传：
 
@@ -101,7 +104,7 @@ cxs install devbox --local-download
 | `cxs install <profile>` | 安装匹配的官方 Codex 和 Shuttle shim |
 | `cxs update <profile>` | 按当前本地 Codex 更新远程组件 |
 | `cxs up <profile>` / `cxs down <profile>` | 启动或停止本地桥接器 |
-| `cxs doctor <profile> [--json]` | 检查 Codex、SSH、远程文件与 Linux 命令执行；可输出 JSON |
+| `cxs doctor <profile> [--json]` | 检查 Codex、SSH、远程文件与远程命令执行；可输出 JSON |
 | `cxs list` / `cxs status <profile>` | 查看配置和状态 |
 | `cxs config <profile>` | 输出生成的 SSH Host 配置 |
 | `cxs rollback <profile>` | 回退到上一份远程 Release |
@@ -140,12 +143,12 @@ Codex 桌面 App
  remote cxs-shim ═══ 单条 SSH stdio / Yamux ═══ local cxs-bridge
         │                                             │
         ├── 匹配版本的 Codex Exec Server ◄── exec ───┤
-        └── 受限 Linux App Server       ◄── host ────┤
+        └── 受限远程 App Server         ◄── host ────┤
                                                       └── 本地 App Server
                                                            持有 session
 ```
 
-本地 App Server 仍然负责会话和账号状态。Shuttle 注册 Linux 执行环境，并把文件系统、进程等 Host RPC 路由到受限的 Linux App Server。远程执行器直接使用 OpenAI 官方发布的 [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases)，其中包含官方维护的 App Server、Exec Server、沙箱、code-mode host 和 ripgrep；Shuttle 只额外提供 SSH/Yamux shim。
+本地 App Server 仍然负责会话和账号状态。Shuttle 注册远程执行环境，并把文件系统、进程等 Host RPC 路由到受限的远程 App Server。远程执行器直接使用 OpenAI 官方发布的 [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases)，其中包含官方维护的 App Server、Exec Server、平台组件、code-mode host 和 ripgrep；Shuttle 只额外提供 SSH/Yamux shim。
 
 shim 只拦截桌面 App Server 启动和 Shuttle 隐藏 agent 命令；其他 `codex` CLI 命令都会交给受管的官方二进制。
 
@@ -153,14 +156,14 @@ shim 只拦截桌面 App Server 启动和 Shuttle 隐藏 agent 命令；其他 `
 
 ## 发布与兼容性
 
-GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。匹配的官方 Linux Codex 包存在，且 workspace 测试、两种 macOS CLI、Windows CLI 和两种 Linux shim 全部通过后，才会发布绑定版本的 Shuttle Release。这些门禁证明构建兼容；针对具体桌面端和服务器的端到端检查仍以 `cxs doctor` 为准。构建失败不会生成半成品，并会在下一轮自动重试。
+GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。只有 macOS ARM64、Windows x64、Linux x64、Linux ARM64 的格式、Clippy 和全部 workspace 测试，以及每个受支持服务器平台的真实官方包 SSH 端到端测试全部通过，同时所有 CLI 与 shim 构建成功，才会发布绑定版本的 Shuttle Release。针对具体桌面端和服务器仍可用 `cxs doctor` 做实时检查。构建失败不会生成半成品，并会在下一轮自动重试。
 
 每个桌面 CLI 都内置完整 Shuttle Release 标签，从该不可变 Release 下载 shim，并从匹配的 OpenAI Release 下载官方 Codex。详见[发布与安装流程](docs/runtime-release.md)和[兼容性说明](docs/compatibility.md)。
 
 ## 安全边界
 
 - OpenSSH 继续负责加密、主机密钥、身份文件、Agent 和跳板机。
-- 不会把 Codex 登录凭据复制到 Linux。
+- 不会把 Codex 登录凭据复制到远程主机。
 - 远程 Exec 与 Host App Server 使用相互隔离的私有 `CODEX_HOME`。
 - 官方 Codex 和 Shuttle shim 激活前必须通过 SHA-256 校验；`doctor` 还会复核已安装执行器的摘要。
 - 本地桥接器使用私有本地端点（macOS 为 Unix socket，Windows 为 loopback）和每个 profile 独立的随机令牌。
