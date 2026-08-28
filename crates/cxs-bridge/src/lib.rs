@@ -288,7 +288,7 @@ where
 {
     let socket_directory = tempfile::Builder::new()
         .prefix("cxs-u-")
-        .tempdir_in("/private/tmp")
+        .tempdir_in(std::env::temp_dir())
         .context("could not create a private App Server socket directory")?;
     let socket_path = socket_directory.path().join("app.sock");
     let listen_url = format!("unix://{}", socket_path.display());
