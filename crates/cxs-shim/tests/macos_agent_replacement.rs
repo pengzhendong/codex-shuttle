@@ -27,14 +27,14 @@ fn start_agent(config: &Path, replace: bool) -> io::Result<ChildGuard> {
         .env("CXS_SHIM_CONFIG", config)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::inherit());
     if replace {
         command.arg("--replace");
     }
     command.spawn().map(ChildGuard)
 }
 
-fn wait_for_pid(path: &Path, expected: u32) -> io::Result<()> {
+fn wait_for_pid(child: &mut ChildGuard, path: &Path, expected: u32) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if fs::read_to_string(path)
@@ -43,6 +43,11 @@ fn wait_for_pid(path: &Path, expected: u32) -> io::Result<()> {
             == Some(expected)
         {
             return Ok(());
+        }
+        if let Some(status) = child.0.try_wait()? {
+            return Err(io::Error::other(format!(
+                "cxs-agent {expected} exited before publishing its PID: {status}"
+            )));
         }
         thread::sleep(Duration::from_millis(25));
     }
@@ -57,7 +62,9 @@ fn wait_for_pid(path: &Path, expected: u32) -> io::Result<()> {
 
 #[test]
 fn live_agent_is_replaced_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    // macOS limits Unix-domain socket paths to 104 bytes. GitHub's runner
+    // temp directory is deeply nested, so keep this fixture directly in /tmp.
+    let directory = tempfile::tempdir_in("/tmp")?;
     let socket = directory.path().join("agent.sock");
     let pid_file = socket.with_extension("pid");
     let token_file = directory.path().join("token");
@@ -85,10 +92,11 @@ fn live_agent_is_replaced_end_to_end() -> Result<(), Box<dyn std::error::Error>>
 
     let mut first = start_agent(&config, false)?;
     let first_pid = first.0.id();
-    wait_for_pid(&pid_file, first_pid)?;
+    wait_for_pid(&mut first, &pid_file, first_pid)?;
 
     let mut replacement = start_agent(&config, true)?;
-    wait_for_pid(&pid_file, replacement.0.id())?;
+    let replacement_pid = replacement.0.id();
+    wait_for_pid(&mut replacement, &pid_file, replacement_pid)?;
     let deadline = Instant::now() + Duration::from_secs(5);
     let first_status = loop {
         if let Some(status) = first.0.try_wait()? {

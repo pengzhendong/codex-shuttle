@@ -75,6 +75,11 @@ cp "$ssh_dir/client_key.pub" "$ssh_dir/authorized_keys"
 chmod 600 "$ssh_dir/authorized_keys"
 sudo chown root "$ssh_dir/host_key"
 if test "$kernel" = Linux; then
+  # Ubuntu's AppArmor policy grants user-namespace access to the system
+  # bubblewrap path. Codex's vendored copy is outside that policy and fails
+  # while configuring the sandbox loopback interface on hosted runners.
+  sudo apt-get update
+  sudo apt-get install --yes bubblewrap
   sudo mkdir -p /run/sshd
   # GitHub's Linux runner account is locked even though sudo is available.
   # Public-key auth is still disabled for locked accounts, so clear the

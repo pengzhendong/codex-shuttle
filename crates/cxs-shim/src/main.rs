@@ -557,7 +557,24 @@ mod unix {
             .is_some_and(|(_, status)| status.starts_with('Z'))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn process_exists(pid: Pid) -> bool {
+        if kill(pid, None).is_err() {
+            return false;
+        }
+        let Ok(output) = std::process::Command::new("/bin/ps")
+            .args(["-p", &pid.as_raw().to_string(), "-o", "stat="])
+            .output()
+        else {
+            return true;
+        };
+        output.status.success()
+            && !String::from_utf8_lossy(&output.stdout)
+                .trim_start()
+                .starts_with('Z')
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn process_exists(pid: Pid) -> bool {
         kill(pid, None).is_ok()
     }
