@@ -181,7 +181,16 @@ cp "$package" "/tmp/cxs-${profile}-codex.tar.gz"
 export CXS_CODEX_PATH="$runtime/bin/codex"
 "$cxs" add cxs-ci-source --name "$profile"
 "$cxs" install "$profile" --shim "$shim"
-"$cxs" doctor "$profile" --json | tee "$work_dir/doctor.json"
+if ! doctor_output=$("$cxs" doctor "$profile" --json 2>&1); then
+  printf '%s\n' "$doctor_output"
+  doctor_detail=$(printf '%s\n' "$doctor_output" | tail -n 24)
+  doctor_detail=${doctor_detail//'%'/'%25'}
+  doctor_detail=${doctor_detail//$'\r'/'%0D'}
+  doctor_detail=${doctor_detail//$'\n'/'%0A'}
+  echo "::error title=Remote doctor failure::$doctor_detail"
+  exit 1
+fi
+printf '%s\n' "$doctor_output" | tee "$work_dir/doctor.json"
 grep -F '"ready": true' "$work_dir/doctor.json"
 "$cxs" status "$profile" | tee "$work_dir/status.txt"
 grep -F 'Usable in App: yes' "$work_dir/status.txt"

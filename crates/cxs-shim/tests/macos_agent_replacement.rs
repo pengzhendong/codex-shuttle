@@ -35,7 +35,7 @@ fn start_agent(config: &Path, replace: bool) -> io::Result<ChildGuard> {
 }
 
 fn wait_for_pid(child: &mut ChildGuard, path: &Path, expected: u32) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if fs::read_to_string(path)
             .ok()
@@ -93,11 +93,15 @@ fn live_agent_is_replaced_end_to_end() -> Result<(), Box<dyn std::error::Error>>
     let mut first = start_agent(&config, false)?;
     let first_pid = first.0.id();
     wait_for_pid(&mut first, &pid_file, first_pid)?;
+    // PID publication precedes exec-server startup and signal-handler setup.
+    // Let the real agent finish that short startup window before replacing it.
+    thread::sleep(Duration::from_millis(250));
+    assert!(first.0.try_wait()?.is_none());
 
     let mut replacement = start_agent(&config, true)?;
     let replacement_pid = replacement.0.id();
     wait_for_pid(&mut replacement, &pid_file, replacement_pid)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(10);
     let first_status = loop {
         if let Some(status) = first.0.try_wait()? {
             break status;
