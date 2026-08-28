@@ -1046,6 +1046,12 @@ mod tests {
         let shim = directory.path().join("cxs-shim");
         fs::write(&shim, "#!/bin/sh\nprintf 'codex-cli 0.147.0\\n'\n")?;
         fs::set_permissions(&shim, fs::Permissions::from_mode(0o700))?;
+        let sha256sum = directory.path().join("sha256sum");
+        fs::write(
+            &sha256sum,
+            "#!/bin/sh\nif command -v shasum >/dev/null 2>&1; then exec shasum -a 256 \"$@\"; fi\nexec /usr/bin/sha256sum \"$@\"\n",
+        )?;
+        fs::set_permissions(&sha256sum, fs::Permissions::from_mode(0o700))?;
         let root = home.join(".local/lib/codex-shuttle");
         let release = "codex-0.147.0-official";
         let executor = format!("{}/current/bin/codex", root.display());
@@ -1066,6 +1072,14 @@ mod tests {
         );
         let output = Command::new("sh")
             .env("HOME", &home)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    directory.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
             .arg("-c")
             .arg(script)
             .output()?;
