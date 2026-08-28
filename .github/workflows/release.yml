@@ -138,6 +138,30 @@ jobs:
           key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
           enableCrossOsArchive: true
 
+  windows-cli:
+    needs: prepare
+    if: needs.prepare.outputs.should-publish == 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: windows-cli-x86_64
+          add-job-id-key: false
+      - run: cargo build --locked --release -p cxs-cli
+        env:
+          CXS_RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-staging -Force | Out-Null
+          Copy-Item target/release/cxs.exe release-staging/cxs-cli-windows-x86_64.exe
+      - uses: actions/cache/save@v5
+        with:
+          path: release-staging/cxs-cli-windows-x86_64.exe
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-windows-x86_64.exe
+          enableCrossOsArchive: true
+
   linux-shim:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
@@ -178,7 +202,7 @@ jobs:
           enableCrossOsArchive: true
 
   publish:
-    needs: [prepare, quality, mac-cli, linux-shim]
+    needs: [prepare, quality, mac-cli, windows-cli, linux-shim]
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -192,6 +216,12 @@ jobs:
         with:
           path: release-staging/cxs-cli-macos-x86_64
           key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-macos-x86_64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-cli-windows-x86_64.exe
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-windows-x86_64.exe
           enableCrossOsArchive: true
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v5
@@ -216,12 +246,16 @@ jobs:
           body: |
             ## Downloads
 
-            Most users only need the CLI for their Mac. `cxs install` automatically selects and installs the matching Linux components.
+            Most users only need the CLI for their desktop platform. `cxs install` automatically selects and installs the matching Linux components.
 
             | macOS | Download | Purpose |
             | --- | --- | --- |
             | Apple Silicon (M1–M4) | [`cxs-cli-macos-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-macos-aarch64) | Codex Shuttle CLI |
             | Intel | [`cxs-cli-macos-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-macos-x86_64) | Codex Shuttle CLI |
+
+            | Windows | Download | Purpose |
+            | --- | --- | --- |
+            | x86_64 | [`cxs-cli-windows-x86_64.exe`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-windows-x86_64.exe) | Codex Shuttle CLI |
 
             ## Installer components
 

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Cursor, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -373,11 +374,11 @@ fn receive_remote_rollouts(options: &SyncOptions<'_>, staging: &Path) -> Result<
         }
         let destination = staging.join(&relative);
         create_private_parent(&destination)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&destination)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut output = options.open(&destination)?;
         io::copy(&mut entry, &mut output)?;
         output.sync_all()?;
         files.push(relative);
@@ -581,9 +582,7 @@ fn install_new_rollout(destination: &Path, contents: &[u8]) -> Result<()> {
         .parent()
         .context("rollout destination has no parent")?;
     let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    set_private_file_permissions(temporary.as_file())?;
     temporary.write_all(contents)?;
     temporary.as_file_mut().sync_all()?;
     temporary
@@ -610,7 +609,7 @@ fn atomic_replace(destination: &Path, contents: &[u8]) -> Result<()> {
 fn create_private_parent(path: &Path) -> Result<()> {
     let parent = path.parent().context("path has no parent directory")?;
     fs::create_dir_all(parent)?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    set_private_directory_permissions(parent)?;
     Ok(())
 }
 
@@ -618,7 +617,7 @@ fn create_backup_dir(root: &Path) -> Result<PathBuf> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
     let path = root.join(format!("session-repair-{timestamp}"));
     fs::create_dir_all(&path)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+    set_private_directory_permissions(&path)?;
     Ok(path)
 }
 
@@ -627,7 +626,7 @@ fn backup_rollouts(codex_home: &Path, backup: &Path, changes: &[RolloutChange]) 
         let destination = backup.join("rollouts").join(&change.relative_path);
         create_private_parent(&destination)?;
         fs::copy(codex_home.join(&change.relative_path), &destination)?;
-        fs::set_permissions(destination, fs::Permissions::from_mode(0o600))?;
+        set_path_private_file_permissions(&destination)?;
     }
     Ok(())
 }
@@ -668,7 +667,31 @@ fn backup_database(source: &Connection, backup_dir: &Path) -> Result<()> {
         backup.run_to_completion(128, Duration::from_millis(10), None)?;
     }
     destination.close().map_err(|(_, error)| error)?;
-    fs::set_permissions(destination_path, fs::Permissions::from_mode(0o600))?;
+    set_path_private_file_permissions(&destination_path)?;
+    Ok(())
+}
+
+fn set_private_file_permissions(file: &File) -> Result<()> {
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    #[cfg(windows)]
+    let _ = file.metadata()?;
+    Ok(())
+}
+
+fn set_path_private_file_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    #[cfg(windows)]
+    let _ = fs::metadata(path)?;
+    Ok(())
+}
+
+fn set_private_directory_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    #[cfg(windows)]
+    let _ = fs::metadata(path)?;
     Ok(())
 }
 

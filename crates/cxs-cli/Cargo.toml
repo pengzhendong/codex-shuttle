@@ -21,10 +21,12 @@ cxs-sessions = { path = "../cxs-sessions" }
 cxs-ssh = { path = "../cxs-ssh" }
 futures-util.workspace = true
 tokio.workspace = true
-nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio-tungstenite.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
 
 [lints]
 workspace = true

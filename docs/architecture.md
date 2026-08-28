@@ -11,7 +11,7 @@ remote cxs-shim control socket
        |                                                              |
        ├─ remote codex exec-server <──── logical `exec` channel ──────┤
        └─ restricted Host App Server <─ logical `host` channel ───────┤
-                                                                      └─ Mac App Server
+                                                                      └─ local App Server
                            host RPC routing + merged initialize + environment/add
 ```
 
@@ -25,7 +25,7 @@ The shim does not parse App Server messages. It supports both the older direct s
 
 The adapter caps each session at 32 concurrent streams and 32 MiB of aggregate receive-window growth. Stream identifiers, frame splitting, flow control, backpressure, and close semantics come from the maintained Yamux implementation rather than a project-specific framing protocol.
 
-The bridge terminates the desktop WebSocket locally and opens both a supervised Mac App Server and a restricted Linux Host App Server. Session methods such as initialize, thread, turn, account, and configuration remain on the Mac. `fs/*`, `fuzzyFileSearch*`, `process/*`, and `command/exec*` are routed to Linux. The initialize request is sent to both servers; the bridge keeps the Mac response but replaces its host identity fields with the Linux `userAgent`, `codexHome`, `platformFamily`, and `platformOs`.
+The bridge terminates the desktop WebSocket locally and opens both a supervised local App Server and a restricted Linux Host App Server. Session methods such as initialize, thread, turn, account, and configuration remain on the desktop. `fs/*`, `fuzzyFileSearch*`, `process/*`, and `command/exec*` are routed to Linux. The initialize request is sent to both servers; the bridge keeps the local response but replaces its host identity fields with the Linux `userAgent`, `codexHome`, `platformFamily`, and `platformOs`. The supervised App Server uses a private Unix socket on macOS and a loopback WebSocket on Windows.
 
 The same adapter enables the experimental API, registers the execution environment, waits for `environment/status=ready`, and attaches it to `thread/start`/`turn/start`. Requests arriving during initialization are bounded and queued. Ping, pong, close, and non-JSON frames are forwarded without semantic changes. The older direct JSONL transport remains available for execution-environment compatibility; full dual-App-Server host routing targets the desktop WebSocket bootstrap.
 
@@ -45,23 +45,23 @@ After the desktop client initializes App Server, the bridge sends:
 }
 ```
 
-The bridge accepts that Mac-local loopback connection, opens an `exec` mux channel, and the remote agent connects it to the Exec Server's private loopback listener. Each agent chooses a free loopback port if the configured preferred port is occupied, so a stale older agent cannot block recovery. The bridge waits until App Server reports the environment as ready, then adds the environment id and remote `cwd` to `thread/start`; later turns inherit the sticky selection.
+The bridge accepts that desktop-local loopback connection, opens an `exec` mux channel, and the remote agent connects it to the Exec Server's private loopback listener. Each agent chooses a free loopback port if the configured preferred port is occupied, so a stale older agent cannot block recovery. The bridge waits until App Server reports the environment as ready, then adds the environment id and remote `cwd` to `thread/start`; later turns inherit the sticky selection.
 
-The Mac App Server is the authority for thread and turn persistence. The Linux Host App Server uses an isolated `CODEX_HOME`, has plugins and apps disabled, and exists only to provide Codex's maintained host RPC implementations. This gives the App remote paths and remote browsing without moving the session database or credentials off the Mac.
+The local App Server is the authority for thread and turn persistence. The Linux Host App Server uses an isolated `CODEX_HOME`, has plugins and apps disabled, and exists only to provide Codex's maintained host RPC implementations. This gives the App remote paths and remote browsing without moving the session database or credentials off the desktop.
 
 Pre-existing sessions created directly on a server are imported explicitly by
-`cxs sync`. Shuttle copies rollout files only; it never replaces the Mac's
+`cxs sync`. Shuttle copies rollout files only; it never replaces the desktop's
 SQLite database with a remote database. Codex's local thread scanner indexes
 new rollouts, while `cxs repair` transactionally aligns provider and workspace
 metadata for rows that already exist.
 
 Shuttle does not synthesize Desktop-private project assignments. Imported
 Linux paths remain Linux paths and become usable when the session is resumed
-through the Shuttle host/environment. Treating them as Mac-local projects
+through the Shuttle host/environment. Treating them as desktop-local projects
 would route filesystem work to the wrong machine and couple Shuttle to an
 unstable Electron state format.
 
-For `thread/start`, Shuttle first asks the Linux Host App Server to create an ephemeral shadow thread with the same remote `cwd`. The Host App Server performs Codex's native instruction hierarchy and Git discovery. Shuttle reads the returned instruction sources through `fs/readFile`, injects their contents into the Mac request's `developerInstructions`, and later merges only environment-native response metadata (`cwd`, runtime roots, instruction-source paths, and Git info). The Mac thread id and persistence fields remain authoritative. Discovery is capped at 32 instruction files, 256 KiB per file, 512 KiB total, and a three-second timeout. Because the shadow is ephemeral, it is never materialized as a remote session.
+For `thread/start`, Shuttle first asks the Linux Host App Server to create an ephemeral shadow thread with the same remote `cwd`. The Host App Server performs Codex's native instruction hierarchy and Git discovery. Shuttle reads the returned instruction sources through `fs/readFile`, injects their contents into the local request's `developerInstructions`, and later merges only environment-native response metadata (`cwd`, runtime roots, instruction-source paths, and Git info). The local thread id and persistence fields remain authoritative. Discovery is capped at 32 instruction files, 256 KiB per file, 512 KiB total, and a three-second timeout. Because the shadow is ephemeral, it is never materialized as a remote session.
 
 Reimplementing Codex's process, filesystem, PTY, HTTP, and sandbox RPC semantics in Shuttle is explicitly out of scope.
 

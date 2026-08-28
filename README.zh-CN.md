@@ -2,7 +2,7 @@
 
 # 🚀 Codex Shuttle
 
-**在 Mac 上保留 Codex 桌面体验，把实际工作放到 Linux 服务器执行。**
+**在 macOS 或 Windows 上保留 Codex 桌面体验，把实际工作放到 Linux 服务器执行。**
 
 [English](README.md) · [架构](docs/architecture.md) · [故障排查](docs/troubleshooting.md) · [版本发布](https://github.com/pengzhendong/codex-shuttle/releases)
 
@@ -11,6 +11,7 @@
 [![License](https://img.shields.io/github/license/pengzhendong/codex-shuttle)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dea584?logo=rust)](rust-toolchain.toml)
 [![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-000000?logo=apple)](#环境要求)
+[![Windows](https://img.shields.io/badge/Windows-x86__64-0078d4?logo=windows)](#环境要求)
 [![Linux](https://img.shields.io/badge/远程%20Linux-arm64%20%7C%20x86__64-fcc624?logo=linux&logoColor=black)](#环境要求)
 
 > [!WARNING]
@@ -18,35 +19,35 @@
 
 </div>
 
-Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux SSH 主机。会话、账号状态和界面留在 Mac；Shell、文件读写、搜索、Git 探测、PTY、测试和沙箱进程在 Linux 上运行。
+Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux SSH 主机。会话、账号状态和界面留在本地桌面；Shell、文件读写、搜索、Git 探测、PTY、测试和沙箱进程在 Linux 上运行。
 
 它复用现有 OpenSSH 配置，通过一条普通 SSH stdio 连接工作；不替换 SSH 服务、不需要 TCP 转发，也不需要把 Codex 登录凭据放到服务器。
 
 ## 为什么使用 Shuttle？
 
 - **原生桌面体验**：继续使用 Codex App、本地账号和本地会话库。
-- **真正的远程路径**：直接浏览和打开 Linux 目录，不再显示伪装的 Mac 路径。
+- **真正的远程路径**：直接浏览和打开 Linux 目录，不再显示伪装的本地路径。
 - **远程执行**：命令、终端、文件操作、搜索、Git 元数据和沙箱都在 Linux 上运行。
 - **官方远程 Codex**：直接使用 OpenAI 发布的版本匹配 Linux 包，不维护 Shuttle 私有分支。
 - **单条 SSH 连接**：Yamux 在一条 SSH stdin/stdout 上承载 App、Exec、Host 三类通道。
-- **会话迁移**：把服务器创建的 session 拉回 Mac，并修复 Provider 导致的不可见问题。
+- **会话迁移**：把服务器创建的 session 拉回桌面端，并修复 Provider 导致的不可见问题。
 - **版本绑定发布**：每天检测官方稳定源码版本，同时永久保留旧版 Release。
 
 ## 环境要求
 
-| Mac 本地 | Linux 远程 |
+| 本地桌面 | Linux 远程 |
 | --- | --- |
-| Apple Silicon 或 Intel macOS | arm64 或 x86_64 Linux |
-| 安装在 `/Applications` 的 ChatGPT 桌面 App | 支持免交互密钥登录的 OpenSSH |
+| Apple Silicon/Intel macOS，或 x86_64 Windows | arm64 或 x86_64 Linux |
+| 已安装 Codex 桌面 App | 支持免交互密钥登录的 OpenSSH |
 | OpenSSH 客户端 | `sh`、`curl`、`tar`、`sha256sum` |
 
-Shuttle 始终使用 `/Applications/ChatGPT.app/Contents/Resources/codex`，不会从 `PATH` 查找 `codex`。Shuttle Release 必须匹配这个内置二进制的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
+Shuttle 始终使用桌面 App 自带的 Codex，不会从 `PATH` 查找 `codex`。macOS 路径为 `/Applications/ChatGPT.app/Contents/Resources/codex`；Windows 会自动选择最新的 `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`。可以用 `CXS_CODEX_PATH` 覆盖自动发现。Shuttle Release 必须匹配这个内置二进制的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
 
 ## 快速开始
 
 ### 1. 安装 `cxs`
 
-安装器会自动识别 Mac 架构和 ChatGPT Desktop 内置 Codex 的版本、校验 Release 文件，并把 `cxs` 安装到 `~/.local/bin`：
+macOS 安装器会自动识别架构和桌面 App 内置 Codex 的版本、校验 Release 文件，并把 `cxs` 安装到 `~/.local/bin`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
@@ -57,6 +58,14 @@ curl -fsSL https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/i
 ```bash
 wget -qO- https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.sh | sh
 ```
+
+Windows 请在 PowerShell 中运行：
+
+```powershell
+irm https://raw.githubusercontent.com/pengzhendong/codex-shuttle/master/install.ps1 | iex
+```
+
+Windows 安装器会把 `cxs.exe` 放到 `%LOCALAPPDATA%\Programs\codex-shuttle\bin`，需要时会输出添加 PATH 的命令。
 
 也可以前往 [Releases](https://github.com/pengzhendong/codex-shuttle/releases) 手动下载并校验文件。
 
@@ -78,7 +87,7 @@ cxs doctor devbox
 
 Shuttle 会生成给 App 使用的 SSH 别名 `cxs-devbox`。在 Codex 桌面 App 中选择该主机，再打开 `/home/me/project` 这样的 Linux 路径。
 
-默认由服务器下载匹配的官方 Codex 包。如果希望先在 Mac 下载再通过 SSH 上传：
+默认由服务器下载匹配的官方 Codex 包。如果希望先在桌面端下载再通过 SSH 上传：
 
 ```bash
 cxs install devbox --local-download
@@ -104,7 +113,7 @@ cxs install devbox --local-download
 
 ## Session 同步
 
-正常情况下，session 由 Mac 持有。如果之前直接在 Linux 上运行过 Codex，可以导入服务器的 rollout：
+正常情况下，session 由桌面端持有。如果之前直接在 Linux 上运行过 Codex，可以导入服务器的 rollout：
 
 ```bash
 cxs sync devbox
@@ -112,7 +121,7 @@ cxs sync devbox
 cxs sync devbox --remote-home /srv/codex-home
 ```
 
-`sync` 根据 thread ID 去重，不覆盖本地 session，也不会用远程 SQLite 替换 Mac 数据库。
+`sync` 根据 thread ID 去重，不覆盖本地 session，也不会用远程 SQLite 替换桌面端数据库。
 
 如果切换 `model_provider` 后本地 session 消失，关闭 Codex 后运行：
 
@@ -132,11 +141,11 @@ Codex 桌面 App
         │                                             │
         ├── 匹配版本的 Codex Exec Server ◄── exec ───┤
         └── 受限 Linux App Server       ◄── host ────┤
-                                                      └── Mac App Server
+                                                      └── 本地 App Server
                                                            持有 session
 ```
 
-Mac App Server 仍然负责会话和账号状态。Shuttle 注册 Linux 执行环境，并把文件系统、进程等 Host RPC 路由到受限的 Linux App Server。远程执行器直接使用 OpenAI 官方发布的 [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases)，其中包含官方维护的 App Server、Exec Server、沙箱、code-mode host 和 ripgrep；Shuttle 只额外提供 SSH/Yamux shim。
+本地 App Server 仍然负责会话和账号状态。Shuttle 注册 Linux 执行环境，并把文件系统、进程等 Host RPC 路由到受限的 Linux App Server。远程执行器直接使用 OpenAI 官方发布的 [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases)，其中包含官方维护的 App Server、Exec Server、沙箱、code-mode host 和 ripgrep；Shuttle 只额外提供 SSH/Yamux shim。
 
 shim 只拦截桌面 App Server 启动和 Shuttle 隐藏 agent 命令；其他 `codex` CLI 命令都会交给受管的官方二进制。
 
@@ -144,9 +153,9 @@ shim 只拦截桌面 App Server 启动和 Shuttle 隐藏 agent 命令；其他 `
 
 ## 发布与兼容性
 
-GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。匹配的官方 Linux Codex 包存在，且 workspace 测试、两种 Mac CLI 和两种 Linux shim 全部通过后，才会发布绑定版本的 Shuttle Release。这些门禁证明构建兼容；针对具体 Mac 和服务器的端到端检查仍以 `cxs doctor` 为准。构建失败不会生成半成品，并会在下一轮自动重试。
+GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。匹配的官方 Linux Codex 包存在，且 workspace 测试、两种 macOS CLI、Windows CLI 和两种 Linux shim 全部通过后，才会发布绑定版本的 Shuttle Release。这些门禁证明构建兼容；针对具体桌面端和服务器的端到端检查仍以 `cxs doctor` 为准。构建失败不会生成半成品，并会在下一轮自动重试。
 
-每个 Mac CLI 都内置完整 Shuttle Release 标签，从该不可变 Release 下载 shim，并从匹配的 OpenAI Release 下载官方 Codex。详见[发布与安装流程](docs/runtime-release.md)和[兼容性说明](docs/compatibility.md)。
+每个桌面 CLI 都内置完整 Shuttle Release 标签，从该不可变 Release 下载 shim，并从匹配的 OpenAI Release 下载官方 Codex。详见[发布与安装流程](docs/runtime-release.md)和[兼容性说明](docs/compatibility.md)。
 
 ## 安全边界
 
@@ -154,7 +163,7 @@ GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z`
 - 不会把 Codex 登录凭据复制到 Linux。
 - 远程 Exec 与 Host App Server 使用相互隔离的私有 `CODEX_HOME`。
 - 官方 Codex 和 Shuttle shim 激活前必须通过 SHA-256 校验；`doctor` 还会复核已安装执行器的摘要。
-- 本地桥接器使用私有 Unix socket 和每个 profile 独立的随机令牌。
+- 本地桥接器使用私有本地端点（macOS 为 Unix socket，Windows 为 loopback）和每个 profile 独立的随机令牌。
 - 远程 Release 不可变，并保留上一份已验证 Release 用于回退。
 - Session 导入会拒绝不安全的归档路径，且不覆盖已有 thread ID。
 

@@ -860,7 +860,7 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc;

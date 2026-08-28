@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,14 +15,20 @@ use cxs_core::{
 };
 use cxs_mux::{ChannelKind, MuxHandle, MuxSession};
 use futures_util::{SinkExt, StreamExt};
+#[cfg(unix)]
 use nix::sys::signal::{Signal, killpg};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use serde_json::{Map, Value, json};
 use subtle::ConstantTimeEq;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::net::TcpListener;
+#[cfg(windows)]
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
@@ -57,10 +64,7 @@ struct PendingThreadMetadata {
 pub async fn serve(profile: Profile, store: ProfileStore, codex: PathBuf) -> Result<()> {
     let expected_token = store.read_token(&profile)?;
     let (mux, mut agent) = start_agent(&profile, &expected_token).await?;
-    let agent_pid = agent
-        .id()
-        .and_then(|value| i32::try_from(value).ok())
-        .map(Pid::from_raw);
+    let agent_pid = agent.id();
     let result = serve_multiplexed(profile, store, codex, mux).await;
     stop_child(&mut agent, agent_pid).await;
     result
@@ -81,8 +85,8 @@ async fn start_agent(profile: &Profile, expected_token: &str) -> Result<(MuxSess
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    configure_child_process(&mut child);
     let mut child = child.spawn().with_context(|| {
         format!(
             "could not start Shuttle agent through {}",
@@ -112,10 +116,18 @@ pub async fn serve_multiplexed(
     codex: PathBuf,
     mut mux: MuxSession,
 ) -> Result<()> {
-    prepare_socket(&profile.local_socket)?;
+    prepare_local_endpoint(&profile.local_socket)?;
+    #[cfg(unix)]
     let listener = UnixListener::bind(&profile.local_socket)
         .with_context(|| format!("could not bind {}", profile.local_socket.display()))?;
+    #[cfg(unix)]
     fs::set_permissions(&profile.local_socket, fs::Permissions::from_mode(0o600))?;
+    #[cfg(windows)]
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .context("could not bind the local compatibility endpoint")?;
+    #[cfg(windows)]
+    fs::write(&profile.local_socket, b"ready\n")?;
     let _socket_guard = SocketGuard(profile.local_socket.clone());
     let exec_listener = TcpListener::bind(("127.0.0.1", profile.local_exec_port))
         .await
@@ -126,8 +138,8 @@ pub async fn serve_multiplexed(
             )
         })?;
     let expected_token = store.read_token(&profile)?;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .context("could not listen for SIGTERM")?;
+    let terminate = termination_signal();
+    tokio::pin!(terminate);
 
     info!(profile = %profile.name, socket = %profile.local_socket.display(), exec_port = profile.local_exec_port, "multiplexed bridge is listening");
     loop {
@@ -185,11 +197,10 @@ pub async fn serve_multiplexed(
                 info!(profile = %profile.name, "bridge is shutting down");
                 return Ok(());
             }
-            signal = terminate.recv() => {
-                if signal.is_some() {
-                    info!(profile = %profile.name, "bridge received SIGTERM");
-                    return Ok(());
-                }
+            signal = &mut terminate => {
+                signal?;
+                info!(profile = %profile.name, "bridge received a termination signal");
+                return Ok(());
             }
         }
     }
@@ -228,15 +239,12 @@ where
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    configure_child_process(&mut command);
     let mut child = command
         .spawn()
         .with_context(|| format!("could not start {} app-server", codex.display()))?;
-    let pid = child
-        .id()
-        .and_then(|value| i32::try_from(value).ok())
-        .map(Pid::from_raw);
+    let pid = child.id();
     let child_stdin = child
         .stdin
         .take()
@@ -267,6 +275,7 @@ where
     Ok(())
 }
 
+#[cfg(unix)]
 async fn handle_websocket_connection<S>(
     stream: S,
     profile: &Profile,
@@ -298,15 +307,12 @@ where
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    configure_child_process(&mut command);
     let mut child = command
         .spawn()
         .with_context(|| format!("could not start {} app-server", codex.display()))?;
-    let pid = child
-        .id()
-        .and_then(|value| i32::try_from(value).ok())
-        .map(Pid::from_raw);
+    let pid = child.id();
     wait_for_socket(&socket_path, &mut child).await?;
     let _socket_guard = SocketGuard(socket_path.clone());
 
@@ -330,6 +336,63 @@ where
     relay_result
 }
 
+#[cfg(windows)]
+async fn handle_websocket_connection<S>(
+    stream: S,
+    profile: &Profile,
+    codex: &Path,
+    forwarded_arguments: &[String],
+    mux: MuxHandle,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let reservation = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .context("could not reserve a local App Server port")?;
+    let address = reservation.local_addr()?;
+    drop(reservation);
+    let listen_url = format!("ws://{address}");
+    let mut command = Command::new(codex);
+    command
+        .args(forwarded_arguments)
+        .args([
+            "--listen",
+            &listen_url,
+            "--enable",
+            "deferred_executor",
+            "--enable",
+            "executor_capability_discovery",
+        ])
+        .env("CODEX_HOME", &profile.codex_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    configure_child_process(&mut command);
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("could not start {} app-server", codex.display()))?;
+    let pid = child.id();
+    let upstream_stream = wait_for_tcp_app_server(address, &mut child).await?;
+
+    let client = tokio_tungstenite::accept_async(stream)
+        .await
+        .context("could not accept the App WebSocket")?;
+    let (upstream, _) =
+        tokio_tungstenite::client_async(format!("{listen_url}/rpc"), upstream_stream)
+            .await
+            .context("could not open the local App Server WebSocket")?;
+    let host = mux
+        .open(ChannelKind::Host)
+        .await
+        .context("could not open the remote Host App Server channel")?;
+
+    let relay_result = relay_websocket(client, upstream, host, profile).await;
+    stop_child(&mut child, pid).await;
+    relay_result
+}
+
+#[cfg(unix)]
 async fn wait_for_socket(path: &Path, child: &mut Child) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -351,15 +414,36 @@ async fn wait_for_socket(path: &Path, child: &mut Child) -> Result<()> {
     }
 }
 
+#[cfg(windows)]
+async fn wait_for_tcp_app_server(
+    address: std::net::SocketAddr,
+    child: &mut Child,
+) -> Result<TcpStream> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(stream) = TcpStream::connect(address).await {
+            return Ok(stream);
+        }
+        if let Some(status) = child.try_wait()? {
+            bail!("App Server exited during startup with {status}");
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!("App Server did not listen on {address} within 5 seconds");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 #[allow(clippy::too_many_lines)]
-async fn relay_websocket<C, H>(
+async fn relay_websocket<C, U, H>(
     client: tokio_tungstenite::WebSocketStream<C>,
-    upstream: tokio_tungstenite::WebSocketStream<UnixStream>,
+    upstream: tokio_tungstenite::WebSocketStream<U>,
     host: H,
     profile: &Profile,
 ) -> Result<()>
 where
     C: AsyncRead + AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
     H: AsyncRead + AsyncWrite + Unpin,
 {
     let (mut client_write, mut client_read) = client.split();
@@ -847,7 +931,7 @@ fn merge_thread_metadata(mut local: Value, host: &Value) -> Result<Value> {
     let local_result = local
         .get_mut("result")
         .and_then(Value::as_object_mut)
-        .context("Mac thread/start response did not contain a result object")?;
+        .context("local thread/start response did not contain a result object")?;
     let host_result = host
         .get("result")
         .and_then(Value::as_object)
@@ -1298,24 +1382,56 @@ fn validate_handshake(
     Ok(())
 }
 
-async fn stop_child(child: &mut Child, pid: Option<Pid>) {
+async fn stop_child(child: &mut Child, pid: Option<u32>) {
     if matches!(child.try_wait(), Ok(Some(_))) {
         return;
     }
+    #[cfg(unix)]
     if let Some(pid) = pid {
-        let _ = killpg(pid, Signal::SIGTERM);
+        if let Ok(pid) = i32::try_from(pid) {
+            let _ = killpg(Pid::from_raw(pid), Signal::SIGTERM);
+        }
     } else {
         let _ = child.start_kill();
     }
+    #[cfg(windows)]
+    {
+        let _ = pid;
+        let _ = child.start_kill();
+    }
     if timeout(CHILD_EXIT_GRACE, child.wait()).await.is_err() {
+        #[cfg(unix)]
         if let Some(pid) = pid {
-            let _ = killpg(pid, Signal::SIGKILL);
+            if let Ok(pid) = i32::try_from(pid) {
+                let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+            }
         }
         let _ = child.kill().await;
     }
 }
 
-fn prepare_socket(path: &Path) -> Result<()> {
+fn configure_child_process(command: &mut Command) {
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000 | 0x0000_0200);
+}
+
+async fn termination_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .context("could not listen for SIGTERM")?;
+        let _ = terminate.recv().await;
+        return Ok(());
+    }
+    #[cfg(windows)]
+    std::future::pending::<Result<()>>().await
+}
+
+#[cfg(unix)]
+fn prepare_local_endpoint(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         bail!("bridge socket path has no parent directory");
     };
@@ -1330,6 +1446,25 @@ fn prepare_socket(path: &Path) -> Result<()> {
     }
     fs::remove_file(path)
         .with_context(|| format!("could not remove stale socket {}", path.display()))
+}
+
+#[cfg(windows)]
+fn prepare_local_endpoint(path: &Path) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        bail!("bridge readiness path has no parent directory");
+    };
+    fs::create_dir_all(parent)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    if !fs::symlink_metadata(path)?.file_type().is_file() {
+        bail!(
+            "refusing to replace non-file readiness path {}",
+            path.display()
+        );
+    }
+    fs::remove_file(path)
+        .with_context(|| format!("could not remove stale readiness file {}", path.display()))
 }
 
 struct SocketGuard(PathBuf);
@@ -1575,6 +1710,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     #[allow(clippy::too_many_lines)]
     async fn registers_environment_over_websocket_transport() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -1756,7 +1892,7 @@ mod tests {
         let local_thread = mock_server
             .next()
             .await
-            .context("missing Mac thread/start")??;
+            .context("missing local thread/start")??;
         let local_thread: Value = serde_json::from_str(local_thread.to_text()?)?;
         assert_eq!(local_thread["id"], 4);
         assert_eq!(

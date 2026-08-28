@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write as IoWrite};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -135,7 +136,7 @@ pub fn ensure_managed_include(paths: &AppPaths) -> Result<()> {
         .parent()
         .context("SSH config path has no parent directory")?;
     fs::create_dir_all(ssh_directory)?;
-    fs::set_permissions(ssh_directory, fs::Permissions::from_mode(0o700))?;
+    set_private_directory_permissions(ssh_directory)?;
 
     let existing = if paths.ssh_config.exists() {
         fs::read_to_string(&paths.ssh_config)
@@ -390,9 +391,7 @@ fn atomic_json_write<T: Serialize>(destination: &Path, value: &T) -> Result<()> 
     let parent = destination.parent().context("destination has no parent")?;
     fs::create_dir_all(parent)?;
     let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    set_private_file_permissions(temporary.as_file(), 0o600)?;
     {
         let mut writer = BufWriter::new(temporary.as_file_mut());
         serde_json::to_writer_pretty(&mut writer, value)?;
@@ -410,14 +409,31 @@ fn atomic_text_write(destination: &Path, value: &str, mode: u32) -> Result<()> {
     let parent = destination.parent().context("destination has no parent")?;
     fs::create_dir_all(parent)?;
     let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(mode))?;
+    set_private_file_permissions(temporary.as_file(), mode)?;
     temporary.write_all(value.as_bytes())?;
     temporary.as_file().sync_all()?;
     temporary
         .persist(destination)
         .map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn set_private_file_permissions(file: &File, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(mode))?;
+    #[cfg(windows)]
+    {
+        let _ = mode;
+        let _ = file.metadata()?;
+    }
+    Ok(())
+}
+
+fn set_private_directory_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    #[cfg(windows)]
+    let _ = fs::metadata(path)?;
     Ok(())
 }
 

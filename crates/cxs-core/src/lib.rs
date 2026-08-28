@@ -1,8 +1,10 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::net::TcpListener;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use fs4::{FileExt, TryLockError};
@@ -13,6 +15,7 @@ use thiserror::Error;
 pub mod routing;
 
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+#[cfg(unix)]
 pub const DESKTOP_CODEX_PATH: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 pub const SHIM_PROTOCOL_VERSION: u32 = 1;
 pub const SHIM_MAGIC: &str = "CXS1";
@@ -21,7 +24,35 @@ pub const AGENT_MAGIC: &str = "CXS-AGENT1";
 
 #[must_use]
 pub fn desktop_codex_path() -> &'static Path {
-    Path::new(DESKTOP_CODEX_PATH)
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        if let Some(path) = std::env::var_os("CXS_CODEX_PATH") {
+            return PathBuf::from(path);
+        }
+        #[cfg(windows)]
+        {
+            let root = dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("OpenAI/Codex/bin");
+            let mut candidates = vec![root.join("codex.exe")];
+            if let Ok(entries) = fs::read_dir(&root) {
+                candidates.extend(
+                    entries
+                        .filter_map(std::result::Result::ok)
+                        .map(|entry| entry.path().join("codex.exe"))
+                        .filter(|path| path.is_file()),
+                );
+            }
+            candidates
+                .into_iter()
+                .filter(|path| path.is_file())
+                .max_by_key(|path| fs::metadata(path).and_then(|value| value.modified()).ok())
+                .unwrap_or_else(|| root.join("codex.exe"))
+        }
+        #[cfg(unix)]
+        PathBuf::from(DESKTOP_CODEX_PATH)
+    })
+    .as_path()
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -126,9 +157,18 @@ impl AppPaths {
     pub fn discover() -> Result<Self> {
         let home =
             dirs::home_dir().context("could not determine the current user's home directory")?;
-        let state_root = std::env::var_os("XDG_STATE_HOME")
-            .map_or_else(|| home.join(".local/state"), PathBuf::from)
-            .join("codex-shuttle");
+        let state_root = std::env::var_os("XDG_STATE_HOME").map_or_else(
+            || {
+                #[cfg(windows)]
+                {
+                    dirs::data_local_dir().unwrap_or_else(|| home.join("AppData/Local"))
+                }
+                #[cfg(unix)]
+                home.join(".local/state")
+            },
+            PathBuf::from,
+        );
+        let state_root = state_root.join("codex-shuttle");
         let ssh_dir = home.join(".ssh");
         Ok(Self {
             state_root,
@@ -192,15 +232,14 @@ impl ProfileStore {
         let directory = self.paths.state_root.join("locks");
         create_private_dir(&directory)?;
         let path = directory.join(format!("{name}.lock"));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options
             .open(&path)
             .with_context(|| format!("could not open operation lock {}", path.display()))?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        set_private_file_permissions(&file)?;
         let result = match mode {
             OperationLockMode::Shared => FileExt::try_lock_shared(&file),
             OperationLockMode::Exclusive => FileExt::try_lock(&file),
@@ -233,7 +272,11 @@ impl ProfileStore {
         }
         create_private_dir(&directory)?;
 
+        #[cfg(unix)]
         let local_socket = directory.join("bridge.sock");
+        #[cfg(windows)]
+        let local_socket = directory.join("bridge.ready");
+        #[cfg(unix)]
         ensure_unix_socket_path_is_short(&local_socket)?;
         let token_file = directory.join("bridge.token");
         write_secret(&token_file, &random_token()?)?;
@@ -292,9 +335,7 @@ impl ProfileStore {
         let mut temporary = NamedTempFile::new_in(&directory).with_context(|| {
             format!("could not create temporary file in {}", directory.display())
         })?;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
+        set_private_file_permissions(temporary.as_file())?;
         {
             let mut writer = BufWriter::new(temporary.as_file_mut());
             serde_json::to_writer_pretty(&mut writer, profile)?;
@@ -390,19 +431,30 @@ pub fn validate_host_alias(host: &str) -> Result<()> {
 
 fn create_private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path).with_context(|| format!("could not create {}", path.display()))?;
+    #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
 
 fn write_secret(path: &Path, contents: &str) -> Result<()> {
     let mut options = OpenOptions::new();
-    options.write(true).create_new(true).mode(0o600);
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
     let mut file = options
         .open(path)
         .with_context(|| format!("could not create {}", path.display()))?;
     file.write_all(contents.as_bytes())?;
     file.write_all(b"\n")?;
     file.sync_all()?;
+    Ok(())
+}
+
+fn set_private_file_permissions(file: &File) -> Result<()> {
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    #[cfg(windows)]
+    let _ = file.metadata()?;
     Ok(())
 }
 
@@ -431,6 +483,7 @@ fn random_high_port() -> Result<u16> {
     Ok(30_000 + value % 30_000)
 }
 
+#[cfg(unix)]
 fn ensure_unix_socket_path_is_short(path: &Path) -> Result<()> {
     const CONSERVATIVE_LIMIT: usize = 100;
     let length = path.as_os_str().as_encoded_bytes().len();
@@ -468,9 +521,14 @@ mod tests {
 
     #[test]
     fn desktop_codex_path_is_the_bundled_app_binary() {
+        #[cfg(unix)]
+        assert_eq!(desktop_codex_path(), Path::new(DESKTOP_CODEX_PATH));
+        #[cfg(windows)]
         assert_eq!(
-            desktop_codex_path(),
-            Path::new("/Applications/ChatGPT.app/Contents/Resources/codex")
+            desktop_codex_path()
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("codex.exe")
         );
     }
 

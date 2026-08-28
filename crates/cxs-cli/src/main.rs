@@ -1,7 +1,11 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Command, Stdio};
@@ -72,7 +76,7 @@ enum Commands {
     /// Install official Codex and the Shuttle shim on the remote host.
     Install {
         profile: String,
-        /// Download official Codex on this Mac, then upload it over SSH.
+        /// Download official Codex on this desktop, then upload it over SSH.
         #[arg(long)]
         local_download: bool,
         /// Use a local Linux cxs-shim binary instead of downloading it.
@@ -82,7 +86,7 @@ enum Commands {
     /// Install artifacts matching the desktop-bundled Codex version.
     Update {
         profile: String,
-        /// Download official Codex on this Mac, then upload it over SSH.
+        /// Download official Codex on this desktop, then upload it over SSH.
         #[arg(long)]
         local_download: bool,
         #[arg(long, hide = true)]
@@ -96,7 +100,7 @@ enum Commands {
     Down { profile: String },
     /// Print the generated SSH host block.
     Config { profile: String },
-    /// Pull missing sessions from a remote host into this Mac.
+    /// Pull missing sessions from a remote host into this desktop.
     Sync {
         profile: String,
         /// Remote Codex home. Defaults to ~/.codex on the SSH host.
@@ -741,19 +745,24 @@ fn up(store: &ProfileStore, name: &str, codex: &Path) -> Result<()> {
     clear_stale_runtime(store, &profile)?;
     let executable = std::env::current_exe().context("could not locate the cxs executable")?;
     let log_path = store.paths().bridge_log(name);
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log_path)?;
+    let mut log_options = OpenOptions::new();
+    log_options.create(true).append(true);
+    #[cfg(unix)]
+    log_options.mode(0o600);
+    let log = log_options.open(&log_path)?;
     let stderr = log.try_clone()?;
-    let child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("bridge")
         .arg(name)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr))
-        .process_group(0)
+        .stderr(Stdio::from(stderr));
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000 | 0x0000_0200);
+    let child = command
         .spawn()
         .context("could not start the background bridge")?;
     let pid = child.id();
@@ -797,15 +806,20 @@ fn stop_bridge(store: &ProfileStore, name: &str, quiet: bool) -> Result<bool> {
         return Ok(false);
     };
     if pid_alive(pid) && pid_is_bridge(pid, name) {
-        let process = nix::unistd::Pid::from_raw(i32::try_from(pid)?);
-        let _ = nix::sys::signal::killpg(process, nix::sys::signal::Signal::SIGTERM);
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline && pid_alive(pid) {
-            std::thread::sleep(Duration::from_millis(50));
+        #[cfg(unix)]
+        {
+            let process = nix::unistd::Pid::from_raw(i32::try_from(pid)?);
+            let _ = nix::sys::signal::killpg(process, nix::sys::signal::Signal::SIGTERM);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline && pid_alive(pid) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if pid_alive(pid) {
+                let _ = nix::sys::signal::killpg(process, nix::sys::signal::Signal::SIGKILL);
+            }
         }
-        if pid_alive(pid) {
-            let _ = nix::sys::signal::killpg(process, nix::sys::signal::Signal::SIGKILL);
-        }
+        #[cfg(windows)]
+        stop_bridge_process(pid)?;
     }
     fs::remove_file(&pid_path).or_else(ignore_not_found)?;
     if !quiet {
@@ -820,6 +834,7 @@ fn clear_stale_runtime(store: &ProfileStore, profile: &Profile) -> Result<()> {
     remove_socket_if_socket(&profile.local_socket)
 }
 
+#[cfg(unix)]
 fn remove_socket_if_socket(path: &Path) -> Result<()> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
@@ -834,13 +849,27 @@ fn remove_socket_if_socket(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn remove_socket_if_socket(path: &Path) -> Result<()> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if !metadata.file_type().is_file() {
+        bail!(
+            "refusing to remove non-file readiness path {}",
+            path.display()
+        );
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
 fn write_pid_file(path: &Path, pid: u32) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
     writeln!(file, "{pid}")?;
     file.sync_all()?;
     Ok(())
@@ -856,6 +885,7 @@ fn read_pid_file(path: &Path) -> Result<Option<u32>> {
     }
 }
 
+#[cfg(unix)]
 fn pid_alive(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
@@ -863,6 +893,19 @@ fn pid_alive(pid: u32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
 
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    let output = Command::new("tasklist.exe")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+}
+
+#[cfg(unix)]
 fn pid_is_bridge(pid: u32, name: &str) -> bool {
     let output = Command::new("ps")
         .arg("-p")
@@ -877,6 +920,36 @@ fn pid_is_bridge(pid: u32, name: &str) -> bool {
     }
     let command = String::from_utf8_lossy(&output.stdout);
     command.contains("cxs") && command.contains(&format!("bridge {name}"))
+}
+
+#[cfg(windows)]
+fn pid_is_bridge(pid: u32, name: &str) -> bool {
+    let script = format!(
+        "$p=Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}'; if ($p) {{ [Console]::Out.Write($p.CommandLine) }}"
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let command = String::from_utf8_lossy(&output.stdout);
+    command.contains("cxs") && command.contains(&format!("bridge {name}"))
+}
+
+#[cfg(windows)]
+fn stop_bridge_process(pid: u32) -> Result<()> {
+    let status = Command::new("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status()
+        .context("could not run taskkill for the bridge")?;
+    if !status.success() && pid_alive(pid) {
+        bail!("could not stop bridge process {pid}");
+    }
+    Ok(())
 }
 
 fn ignore_not_found(error: std::io::Error) -> std::io::Result<()> {

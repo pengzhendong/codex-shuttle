@@ -21,6 +21,9 @@ All notable changes to Codex Shuttle are documented here. The project follows se
 - Added concurrent Codex transfer and shim upload with resumable remote downloads.
 - Added immutable remote releases, executor-aware rollback, and reversible SSH/profile changes.
 - Added macOS CLI and Linux-musl shim release artifacts for both supported architectures.
+- Added a native Windows x86_64 CLI, loopback WebSocket App Server transport,
+  Windows process lifecycle support, bundled SQLite, CI/release coverage, and
+  a checksum-verifying PowerShell installer.
 - Added `cxs sync <profile>` to import remote rollout sessions without
   overwriting local thread IDs.
 - Added `cxs repair` for backed-up, transactional Provider and workspace

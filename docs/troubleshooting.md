@@ -26,13 +26,13 @@ cxs doctor <profile>
 
 Shuttle writes only its managed `cxs-*` aliases. It does not rewrite the original host entry.
 
-## The Codex app shows a Mac path
+## The Codex app shows a local desktop path
 
-Choose the generated host alias, normally `cxs-<profile>`, and open a Linux path such as `/home/me/project`. A project opened through the ordinary local connection remains local; Shuttle does not reinterpret an existing Mac path as a remote one.
+Choose the generated host alias, normally `cxs-<profile>`, and open a Linux path such as `/home/me/project`. A project opened through the ordinary local connection remains local; Shuttle does not reinterpret an existing desktop path as a remote one.
 
 ## No matching official Codex release
 
-The installed `cxs` binary is bound to one Codex source version. Confirm the local Codex source baseline and select the matching Shuttle Release. If the server cannot reach GitHub, use Mac-side download:
+The installed `cxs` binary is bound to one Codex source version. Confirm the local Codex source baseline and select the matching Shuttle Release. If the server cannot reach GitHub, use desktop-side download:
 
 ```bash
 cxs install <profile> --local-download
@@ -52,7 +52,7 @@ The command creates a backup before updating matching Provider and working-direc
 cxs sync <profile>
 ```
 
-`sync` never overwrites an existing local thread ID and never copies the remote SQLite database over the Mac database.
+`sync` never overwrites an existing local thread ID and never copies the remote SQLite database over the desktop database.
 
 ## The bridge stopped after SSH config changed
 
@@ -90,6 +90,6 @@ Before filing an issue, include:
 - bundled ChatGPT Desktop Codex version
 - `cxs status <profile>` output
 - the failing `cxs doctor <profile>` check
-- Mac and remote CPU architectures
+- desktop OS/CPU architecture and remote CPU architecture
 
 Remove hostnames, usernames, paths, tokens, SSH options, and session content. Never post `~/.ssh/config`, profile tokens, Codex credentials, or private rollout files publicly.

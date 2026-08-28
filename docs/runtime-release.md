@@ -2,7 +2,7 @@
 
 Codex Shuttle does not compile or redistribute Codex. It uses the official,
 versioned Linux packages published by OpenAI and releases only Shuttle's macOS
-CLI and Linux shim.
+and Windows CLIs plus the Linux shim.
 
 ## Automatic Shuttle releases
 
@@ -11,9 +11,9 @@ CLI and Linux shim.
 2. It selects the oldest version without a matching
    `v<shuttle-version>-codex.<codex-version>` Shuttle release.
 3. The workflow verifies that OpenAI published official Linux packages for
-   x86_64 and arm64, runs all workspace tests, and builds two macOS CLIs plus
-   two static Linux shims.
-4. It publishes those four small binaries and `SHA256SUMS`. No Codex source is
+   x86_64 and arm64, runs all workspace tests, and builds two macOS CLIs, one
+   Windows x86_64 CLI, and two static Linux shims.
+4. It publishes those five small binaries and `SHA256SUMS`. No Codex source is
    checked out and no Codex runtime is compiled or stored by Shuttle.
 
 A failed build creates no partial release and is retried by the next scheduled
@@ -28,14 +28,14 @@ remain available for older desktop-bundled Codex versions.
    `rust-v<version>/codex-package-<target>.tar.gz` and
    `codex-package_SHA256SUMS` assets.
 3. By default the SSH host downloads and verifies the official package while
-   the Mac uploads the small Shuttle shim. With `--local-download`, the Mac
-   downloads and verifies Codex first, then uploads it over SSH.
+   the desktop uploads the small Shuttle shim. With `--local-download`, the
+   desktop downloads and verifies Codex first, then uploads it over SSH.
 4. The installer extracts to a private staging directory and checks the
    official Codex binary, code-mode host, ripgrep, bubblewrap, exact version,
    and `exec-server` entry point before atomically switching `current`. It also
    records the extracted Codex digest so later `doctor` runs detect changes.
 5. `cxs up` starts one SSH stdio session. The shim starts official Codex's Exec
-   Server and restricted Host App Servers; the Mac App Server remains the
+   Server and restricted Host App Servers; the local App Server remains the
    authority for the real thread and account state.
 6. A profile becomes ready only after live environment registration, Linux
    command execution, and a remote directory read succeed.

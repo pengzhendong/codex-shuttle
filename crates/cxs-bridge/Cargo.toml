@@ -13,7 +13,6 @@ clap.workspace = true
 cxs-core = { path = "../cxs-core" }
 cxs-mux = { path = "../cxs-mux" }
 futures-util.workspace = true
-nix.workspace = true
 serde_json.workspace = true
 subtle.workspace = true
 tempfile.workspace = true
@@ -21,6 +20,9 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
 
 [lints]
 workspace = true

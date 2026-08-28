@@ -24,8 +24,8 @@ The small project-owned `SplitIo` adapters exist only because Yamux uses the `fu
 - Maintaining a custom multiplexing frame format.
 - Recreating Codex process, PTY, filesystem, sandbox, approval, or HTTP RPCs.
 - Parsing or proxying arbitrary App Server semantics.
-- Copying Mac Codex credentials or state to Linux.
-- Replacing the Mac SQLite database with a remote copy.
+- Copying desktop Codex credentials or state to Linux.
+- Replacing the desktop SQLite database with a remote copy.
 
 The Rust session repair adapts the core approach from the MIT-licensed
 `codex-provider-sync`. Attribution and its license are retained in
@@ -36,7 +36,7 @@ workflow.
 
 The installer always selects OpenAI's official source-version and
 architecture-matched `codex-package-<target>.tar.gz`. The SSH host downloads it
-by default; `--local-download` moves that download to the Mac and uploads the
+by default; `--local-download` moves that download to the desktop and uploads the
 same verified archive. There is no custom runtime, existing-binary fallback,
 or system-wide Codex dependency.
 

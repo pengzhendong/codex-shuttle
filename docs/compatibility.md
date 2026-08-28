@@ -4,7 +4,7 @@ Shuttle verifies each Codex source version instead of assuming internal protocol
 
 ## Compatibility levels
 
-- **Build-compatible**: the official Codex packages exist and the workspace tests, both Mac builds, and both Linux shim builds passed. Automated Releases provide this level.
+- **Build-compatible**: the official Codex packages exist and the workspace tests, both macOS builds, the Windows build, and both Linux shim builds passed. Automated Releases provide this level.
 - **Ready on a host**: `cxs doctor` completed the live SSH handshake, App Server initialization, external Exec Server readiness check, remote directory read, and a Linux `command/exec` probe for one profile.
 - **Matrix-verified**: the extended filesystem, process, PTY, diff, sandbox, resume/fork, and disconnect-cleanup matrix passed on both supported Linux architectures.
 
@@ -12,7 +12,7 @@ Build compatibility is necessary but does not replace the per-host readiness che
 
 ## Baseline validated contract: `codex-cli 0.147.0`
 
-Verified locally on macOS arm64:
+Verified locally on macOS arm64 and build/test-verified on Windows x86_64:
 
 - `codex app-server --stdio` accepts an initialize request with the `experimentalApi` capability.
 - The generated experimental schema contains `environment/add`, `environment/status`, `environment/info`, `TurnEnvironmentParams`, and sticky environments on `ThreadStartParams`.
@@ -21,6 +21,7 @@ Verified locally on macOS arm64:
 - `environment/info` returns the Exec Server's shell and cwd, proving that App Server is querying the external execution environment rather than its own host.
 - The generated client schema contains the Host RPCs Shuttle routes remotely: `fs/readDirectory`, `fs/readFile`, `fs/watch`, `fuzzyFileSearch/sessionStart`, `process/spawn`, and `command/exec`.
 - The macOS desktop SSH bootstrap currently probes `codex` through an interactive login shell, starts `codex -c features.code_mode_host=true app-server --listen unix://`, and then runs `codex app-server proxy`. Shuttle's shim emulates this control-socket lifecycle while exiting after the proxy disconnects.
+- On Windows, Shuttle discovers the desktop-managed `codex.exe`, launches its local App Server on a private loopback WebSocket, and uses a per-profile readiness file instead of a Unix socket. The remote Linux shim and Yamux protocol are unchanged.
 - Shuttle carries App, Exec Server, and Host App Server traffic as independent Yamux streams over one ordinary SSH command's stdin/stdout. Each stream begins with Shuttle's versioned type header. Compatibility does not depend on `AllowTcpForwarding` or `AllowStreamLocalForwarding`.
 - The installer verifies OpenAI's official package checksum, requires the pinned source version, and checks `codex exec-server --help`. Readiness still requires live execution-environment and remote filesystem probes; version matching alone is never sufficient.
 
