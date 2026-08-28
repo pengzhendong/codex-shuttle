@@ -43,7 +43,9 @@ jobs:
           add-job-id-key: false
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      - name: Test workspace
+        shell: bash
+        run: bash .github/scripts/test-workspace.sh
 
   remote-e2e:
     strategy:

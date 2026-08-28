@@ -568,7 +568,13 @@ profile_dir="$HOME/.local/lib/codex-shuttle/profiles/$expected"
 if test -d "$profile_dir"; then find "$profile_dir" -depth -delete; fi
 case "${{SHELL:-/bin/sh}}" in
   */zsh) shell_profile="$HOME/.zprofile" ;;
-  */bash|*/sh|*/dash) shell_profile="$HOME/.profile" ;;
+  */bash)
+    if test -f "$HOME/.bash_profile"; then shell_profile="$HOME/.bash_profile"
+    elif test -f "$HOME/.bash_login"; then shell_profile="$HOME/.bash_login"
+    else shell_profile="$HOME/.profile"
+    fi
+    ;;
+  */sh|*/dash) shell_profile="$HOME/.profile" ;;
   *) shell_profile="" ;;
 esac
 if test -n "$shell_profile" && test -f "$shell_profile"; then
@@ -745,7 +751,13 @@ if test -f "$owner_file"; then
 fi
 case "${{SHELL:-/bin/sh}}" in
   */zsh) shell_profile="$HOME/.zprofile" ;;
-  */bash|*/sh|*/dash) shell_profile="$HOME/.profile" ;;
+  */bash)
+    if test -f "$HOME/.bash_profile"; then shell_profile="$HOME/.bash_profile"
+    elif test -f "$HOME/.bash_login"; then shell_profile="$HOME/.bash_login"
+    else shell_profile="$HOME/.profile"
+    fi
+    ;;
+  */sh|*/dash) shell_profile="$HOME/.profile" ;;
   *) echo "unsupported remote login shell ${{SHELL:-unknown}}" >&2; exit 1 ;;
 esac
 mkdir -p "$root/releases" "$root/profiles/$profile/codex-home" "$config_dir" "$HOME/.local/bin"
