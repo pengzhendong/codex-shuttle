@@ -3,7 +3,7 @@
   "codex_version": "codex-cli 0.147.0",
   "agent_socket": "/home/user/.local/lib/codex-shuttle/profiles/example/agent.sock",
   "token_file": "/home/user/.config/codex-shuttle/bridge.token",
-  "exec_server": "/home/user/.local/lib/codex-shuttle/current/bin/cxs-runtime",
+  "exec_server": "/home/user/.local/lib/codex-shuttle/current/bin/codex",
   "exec_server_args": [
     "exec-server",
     "--disable",
@@ -17,5 +17,5 @@
   ],
   "exec_server_port": 49445,
   "codex_home": "/home/user/.local/lib/codex-shuttle/profiles/gpu/codex-home",
-  "original_codex": "/home/user/.local/lib/codex-shuttle/original-codex"
+  "original_codex": "/home/user/.local/lib/codex-shuttle/current/bin/codex"
 }

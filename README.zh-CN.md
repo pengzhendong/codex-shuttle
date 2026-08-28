@@ -27,7 +27,7 @@ Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux SSH 主机
 - **原生桌面体验**：继续使用 Codex App、本地账号和本地会话库。
 - **真正的远程路径**：直接浏览和打开 Linux 目录，不再显示伪装的 Mac 路径。
 - **远程执行**：命令、终端、文件操作、搜索、Git 元数据和沙箱都在 Linux 上运行。
-- **精简远程运行时**：只安装版本匹配的 App Server/Exec Server，不安装完整 CLI/TUI。
+- **官方远程 Codex**：直接使用 OpenAI 发布的版本匹配 Linux 包，不维护 Shuttle 私有分支。
 - **单条 SSH 连接**：Yamux 在一条 SSH stdin/stdout 上承载 App、Exec、Host 三类通道。
 - **会话迁移**：把服务器创建的 session 拉回 Mac，并修复 Provider 导致的不可见问题。
 - **版本绑定发布**：每天检测官方稳定源码版本，同时永久保留旧版 Release。
@@ -78,7 +78,7 @@ cxs doctor devbox
 
 Shuttle 会生成给 App 使用的 SSH 别名 `cxs-devbox`。在 Codex 桌面 App 中选择该主机，再打开 `/home/me/project` 这样的 Linux 路径。
 
-默认由服务器下载匹配的 runtime。如果希望先在 Mac 下载再通过 SSH 上传：
+默认由服务器下载匹配的官方 Codex 包。如果希望先在 Mac 下载再通过 SSH 上传：
 
 ```bash
 cxs install devbox --local-download
@@ -89,10 +89,10 @@ cxs install devbox --local-download
 | 命令 | 用途 |
 | --- | --- |
 | `cxs add <ssh-host> [--name <profile>]` | 根据 `ssh -G` 创建或刷新配置 |
-| `cxs install <profile>` | 安装匹配的远程 runtime 和 shim |
+| `cxs install <profile>` | 安装匹配的官方 Codex 和 Shuttle shim |
 | `cxs update <profile>` | 按当前本地 Codex 更新远程组件 |
 | `cxs up <profile>` / `cxs down <profile>` | 启动或停止本地桥接器 |
-| `cxs doctor <profile> [--json]` | 检查 Codex、SSH、runtime、远程文件与 Linux 命令执行；可输出 JSON |
+| `cxs doctor <profile> [--json]` | 检查 Codex、SSH、远程文件与 Linux 命令执行；可输出 JSON |
 | `cxs list` / `cxs status <profile>` | 查看配置和状态 |
 | `cxs config <profile>` | 输出生成的 SSH Host 配置 |
 | `cxs rollback <profile>` | 回退到上一份远程 Release |
@@ -100,7 +100,7 @@ cxs install devbox --local-download
 | `cxs repair` | 备份并修复本地 Provider/session 元数据 |
 | `cxs remove <profile> [--remote]` | 删除本地状态，并可选删除远程 Shuttle 状态 |
 
-面向用户的选项可通过 `cxs <command> --help` 查看。开发用的本地产物覆盖参数仍然可用，但不再显示在普通帮助中。
+所有面向用户的选项都可通过 `cxs <command> --help` 查看。
 
 ## Session 同步
 
@@ -136,22 +136,24 @@ Codex 桌面 App
                                                            持有 session
 ```
 
-Mac App Server 仍然负责会话和账号状态。Shuttle 注册 Linux 执行环境，并把文件系统、进程等 Host RPC 路由到受限的 Linux App Server。远程 runtime 从匹配的 [OpenAI Codex](https://github.com/openai/codex) 公开 `rust-vX.Y.Z` 源码构建，只保留 Shuttle 需要的 App Server 和 Exec Server 入口。
+Mac App Server 仍然负责会话和账号状态。Shuttle 注册 Linux 执行环境，并把文件系统、进程等 Host RPC 路由到受限的 Linux App Server。远程执行器直接使用 OpenAI 官方发布的 [`codex-package-<target>.tar.gz`](https://github.com/openai/codex/releases)，其中包含官方维护的 App Server、Exec Server、沙箱、code-mode host 和 ripgrep；Shuttle 只额外提供 SSH/Yamux shim。
+
+shim 只拦截桌面 App Server 启动和 Shuttle 隐藏 agent 命令；其他 `codex` CLI 命令都会交给受管的官方二进制。
 
 协议细节见[架构文档](docs/architecture.md)，模块复用边界见[依赖边界](docs/dependency-boundaries.md)。
 
 ## 发布与兼容性
 
-GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。只有 workspace 测试、两种 Mac CLI、两种 Linux shim 和两种 Linux runtime 烟测全部通过，才会发布绑定版本的 Shuttle Release。这些门禁证明构建兼容；针对具体 Mac 和服务器的端到端检查仍以 `cxs doctor` 为准。构建失败不会生成半成品，并会在下一轮自动重试。
+GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。匹配的官方 Linux Codex 包存在，且 workspace 测试、两种 Mac CLI 和两种 Linux shim 全部通过后，才会发布绑定版本的 Shuttle Release。这些门禁证明构建兼容；针对具体 Mac 和服务器的端到端检查仍以 `cxs doctor` 为准。构建失败不会生成半成品，并会在下一轮自动重试。
 
-每个已发布的 Mac CLI 都内置完整 Release 标签，只从同一份不可变 Release 下载 shim/runtime。详见 [Runtime 发布流程](docs/runtime-release.md)和[兼容性说明](docs/compatibility.md)。
+每个 Mac CLI 都内置完整 Shuttle Release 标签，从该不可变 Release 下载 shim，并从匹配的 OpenAI Release 下载官方 Codex。详见[发布与安装流程](docs/runtime-release.md)和[兼容性说明](docs/compatibility.md)。
 
 ## 安全边界
 
 - OpenSSH 继续负责加密、主机密钥、身份文件、Agent 和跳板机。
 - 不会把 Codex 登录凭据复制到 Linux。
 - 远程 Exec 与 Host App Server 使用相互隔离的私有 `CODEX_HOME`。
-- runtime 和 shim 激活前必须通过 SHA-256 校验。
+- 官方 Codex 和 Shuttle shim 激活前必须通过 SHA-256 校验；`doctor` 还会复核已安装执行器的摘要。
 - 本地桥接器使用私有 Unix socket 和每个 profile 独立的随机令牌。
 - 远程 Release 不可变，并保留上一份已验证 Release 用于回退。
 - Session 导入会拒绝不安全的归档路径，且不覆盖已有 thread ID。
@@ -166,7 +168,7 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-绑定 Codex 版本的远程 runtime 有意放在普通 Cargo workspace 之外。修改协议或发布逻辑前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)和 [Runtime 发布流程](docs/runtime-release.md)。
+修改协议或发布逻辑前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)和[发布与安装流程](docs/runtime-release.md)。
 
 ## 项目状态
 

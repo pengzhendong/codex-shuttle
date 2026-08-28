@@ -4,7 +4,7 @@ Shuttle verifies each Codex source version instead of assuming internal protocol
 
 ## Compatibility levels
 
-- **Build-compatible**: the workspace tests, both Mac builds, both Linux shim builds, and both packaged-runtime smoke tests passed. Automated Releases provide this level.
+- **Build-compatible**: the official Codex packages exist and the workspace tests, both Mac builds, and both Linux shim builds passed. Automated Releases provide this level.
 - **Ready on a host**: `cxs doctor` completed the live SSH handshake, App Server initialization, external Exec Server readiness check, remote directory read, and a Linux `command/exec` probe for one profile.
 - **Matrix-verified**: the extended filesystem, process, PTY, diff, sandbox, resume/fork, and disconnect-cleanup matrix passed on both supported Linux architectures.
 
@@ -22,7 +22,7 @@ Verified locally on macOS arm64:
 - The generated client schema contains the Host RPCs Shuttle routes remotely: `fs/readDirectory`, `fs/readFile`, `fs/watch`, `fuzzyFileSearch/sessionStart`, `process/spawn`, and `command/exec`.
 - The macOS desktop SSH bootstrap currently probes `codex` through an interactive login shell, starts `codex -c features.code_mode_host=true app-server --listen unix://`, and then runs `codex app-server proxy`. Shuttle's shim emulates this control-socket lifecycle while exiting after the proxy disconnects.
 - Shuttle carries App, Exec Server, and Host App Server traffic as independent Yamux streams over one ordinary SSH command's stdin/stdout. Each stream begins with Shuttle's versioned type header. Compatibility does not depend on `AllowTcpForwarding` or `AllowStreamLocalForwarding`.
-- The installer may reuse an existing remote Codex only when `codex --version` exactly matches the pinned local version and `codex exec-server --help` succeeds. Readiness still requires live execution-environment and remote filesystem probes; version matching alone is never sufficient.
+- The installer verifies OpenAI's official package checksum, requires the pinned source version, and checks `codex exec-server --help`. Readiness still requires live execution-environment and remote filesystem probes; version matching alone is never sufficient.
 
 The automated `cxs-probe` regenerates the experimental schema and checks the required fields. The extended matrix remains a separate verification level beyond the automatic build gates.
 

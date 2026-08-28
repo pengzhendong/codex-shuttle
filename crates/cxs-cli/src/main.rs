@@ -39,9 +39,7 @@ struct Arguments {
 }
 
 struct InstallArtifacts {
-    runtime_package: Option<PathBuf>,
     local_download: bool,
-    remote_codex: Option<String>,
     shim: Option<PathBuf>,
 }
 
@@ -71,18 +69,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Install matching Codex executor and the Shuttle shim on the remote host.
+    /// Install official Codex and the Shuttle shim on the remote host.
     Install {
         profile: String,
-        /// Use a locally built cxs-runtime package.
-        #[arg(long, hide = true, conflicts_with_all = ["remote_codex", "local_download"])]
-        runtime_package: Option<PathBuf>,
-        /// Download the runtime on this Mac, then upload it over SSH.
-        #[arg(long, conflicts_with_all = ["remote_codex", "runtime_package"])]
+        /// Download official Codex on this Mac, then upload it over SSH.
+        #[arg(long)]
         local_download: bool,
-        /// Reuse this existing Codex executable on the remote host.
-        #[arg(long, hide = true, conflicts_with_all = ["runtime_package", "local_download"])]
-        remote_codex: Option<String>,
         /// Use a local Linux cxs-shim binary instead of downloading it.
         #[arg(long, hide = true)]
         shim: Option<PathBuf>,
@@ -90,14 +82,9 @@ enum Commands {
     /// Install artifacts matching the desktop-bundled Codex version.
     Update {
         profile: String,
-        #[arg(long, hide = true, conflicts_with_all = ["remote_codex", "local_download"])]
-        runtime_package: Option<PathBuf>,
-        /// Download the runtime on this Mac, then upload it over SSH.
-        #[arg(long, conflicts_with_all = ["remote_codex", "runtime_package"])]
+        /// Download official Codex on this Mac, then upload it over SSH.
+        #[arg(long)]
         local_download: bool,
-        /// Reuse this existing Codex executable on the remote host.
-        #[arg(long, hide = true, conflicts_with_all = ["runtime_package", "local_download"])]
-        remote_codex: Option<String>,
         #[arg(long, hide = true)]
         shim: Option<PathBuf>,
     },
@@ -176,16 +163,12 @@ async fn main() -> Result<()> {
         }
         Commands::Install {
             profile,
-            runtime_package,
             local_download,
-            remote_codex,
             shim,
         }
         | Commands::Update {
             profile,
-            runtime_package,
             local_download,
-            remote_codex,
             shim,
         } => {
             let _lock = store.lock_profile(&profile, OperationLockMode::Exclusive)?;
@@ -194,9 +177,7 @@ async fn main() -> Result<()> {
                 &profile,
                 desktop_codex_path(),
                 InstallArtifacts {
-                    runtime_package,
                     local_download,
-                    remote_codex,
                     shim,
                 },
             )
@@ -609,9 +590,7 @@ async fn install(
     let candidate_version = profile.codex_version.clone();
     profile.codex_version = current_version;
     let options = InstallOptions {
-        runtime_package: artifacts.runtime_package,
         local_download: artifacts.local_download,
-        remote_codex: artifacts.remote_codex,
         shim: artifacts.shim,
         ..InstallOptions::default()
     };
@@ -619,7 +598,7 @@ async fn install(
         println!("Stopped the existing bridge before replacing remote artifacts.");
     }
     println!(
-        "Installing {} executor for {} on '{}'...",
+        "Installing official {} for {} on '{}'...",
         profile.codex_version, facts.arch, profile.source_host
     );
     let record = match cxs_install::install(&profile, &token, &facts, &options) {

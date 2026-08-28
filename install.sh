@@ -3,7 +3,7 @@
 set -eu
 
 REPOSITORY="pengzhendong/codex-shuttle"
-SHUTTLE_VERSION="0.1.5"
+SHUTTLE_VERSION="0.2.0"
 INSTALL_DIR=${CXS_INSTALL_DIR:-"$HOME/.local/bin"}
 BUNDLED_CODEX="/Applications/ChatGPT.app/Contents/Resources/codex"
 

@@ -882,7 +882,7 @@ mod tests {
             b"/root/.local/bin/cxs-shim\0__cxs-agent\0--replace\0"
         ));
         assert!(!is_agent_command_line(
-            b"/root/.local/bin/cxs-runtime\0exec-server\0"
+            b"/root/.local/bin/codex\0exec-server\0"
         ));
     }
 

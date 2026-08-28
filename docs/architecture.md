@@ -31,7 +31,7 @@ The same adapter enables the experimental API, registers the execution environme
 
 ## Version-sensitive upstream boundary
 
-The baseline validated Codex version, 0.147.0, exposes an experimental `exec-server` WebSocket transport. Its generated experimental App Server schema includes `environment/add`, `environment/status`, and sticky `environments` fields on thread and turn requests. Shuttle uses these generated contracts instead of relying on the draft `[[environments]] program/args` configuration. Each Shuttle release is built against one matching `rust-vX.Y.Z` source tag because generated schemas and executable behavior can differ by version.
+The baseline validated Codex version, 0.147.0, exposes an experimental `exec-server` WebSocket transport. Its generated experimental App Server schema includes `environment/add`, `environment/status`, and sticky `environments` fields on thread and turn requests. Shuttle uses these generated contracts instead of relying on the draft `[[environments]] program/args` configuration. Each Shuttle release is qualified against one matching `rust-vX.Y.Z` release because generated schemas and executable behavior can differ by version.
 
 After the desktop client initializes App Server, the bridge sends:
 
@@ -85,12 +85,13 @@ Filesystem, process, PTY, diff, sandbox, resume/fork, and disconnect-cleanup qua
 ├── previous -> releases/<release>
 ├── releases/<release>/
 │   ├── cxs-shim
+│   ├── bin/codex
+│   ├── bin/codex-code-mode-host
+│   ├── codex-path/rg
+│   ├── codex-resources/bwrap
 │   ├── executor.path
 │   ├── shim.json
 │   └── install.json
-├── releases/<runtime-release>/
-│   ├── bin/cxs-runtime
-│   └── ...
 └── profiles/<profile>/
     ├── token
     ├── agent.sock
@@ -99,10 +100,10 @@ Filesystem, process, PTY, diff, sandbox, resume/fork, and disconnect-cleanup qua
         └── host-app-server/
 ```
 
-The active release normally contains the shim, the small `cxs-runtime`, and metadata. Only an explicit `--remote-codex` makes `executor.path` reference a full Codex already installed by the user. Rollback validates the recorded executor before switching symlinks.
+The active release contains the small Shuttle shim, OpenAI's official Codex package, and metadata. The official package stays private to Shuttle and is not installed as a system package. Rollback validates the recorded executor before switching symlinks.
 
 The App control socket includes the shim digest. After an update, a newly
 started desktop connection cannot accidentally reuse a still-running control
 listener from an older shim protocol; the idle older listener exits on its own.
 
-This split is deliberate: `cxs-runtime` links Codex's maintained Exec Server and App Server libraries rather than recreating process, filesystem, PTY, HTTP, sandbox, and approval semantics.
+This split is deliberate: official Codex continues to own its Exec Server, App Server, process, filesystem, PTY, HTTP, sandbox, and approval semantics. Shuttle owns only the remote transport and environment adaptation.

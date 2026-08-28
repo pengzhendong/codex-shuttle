@@ -7,7 +7,7 @@ cxs status <profile>
 cxs doctor <profile>
 ```
 
-`doctor` is the source of truth for the complete local Codex, SSH, remote runtime, execution-environment, and filesystem path.
+`doctor` is the source of truth for the complete local Codex, SSH, remote executor, execution-environment, and filesystem path.
 
 ## SSH still asks for a password
 
@@ -30,20 +30,12 @@ Shuttle writes only its managed `cxs-*` aliases. It does not rewrite the origina
 
 Choose the generated host alias, normally `cxs-<profile>`, and open a Linux path such as `/home/me/project`. A project opened through the ordinary local connection remains local; Shuttle does not reinterpret an existing Mac path as a remote one.
 
-## No matching runtime release
+## No matching official Codex release
 
-The installed `cxs` binary is bound to one immutable GitHub Release. Confirm the local Codex source baseline and select the matching Shuttle Release. If the server cannot reach GitHub, use Mac-side download:
+The installed `cxs` binary is bound to one Codex source version. Confirm the local Codex source baseline and select the matching Shuttle Release. If the server cannot reach GitHub, use Mac-side download:
 
 ```bash
 cxs install <profile> --local-download
-```
-
-For development builds, provide a locally built package explicitly:
-
-```bash
-cxs install <profile> \
-  --runtime-package ./cxs-runtime-*.tar.gz \
-  --shim ./cxs-shim
 ```
 
 ## A session is missing after changing Provider
@@ -79,7 +71,7 @@ upgrade, update the remote shim as well. Current releases use a versioned App
 control socket so a stale process from an older release cannot receive the new
 WebSocket proxy connection.
 
-## An update broke the remote runtime
+## An update broke the remote executor
 
 Switch to the previous verified remote release:
 
