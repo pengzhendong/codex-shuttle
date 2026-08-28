@@ -79,7 +79,13 @@ if test "$kernel" = Linux; then
   # bubblewrap path. Codex's vendored copy is outside that policy and fails
   # while configuring the sandbox loopback interface on hosted runners.
   sudo apt-get update
-  sudo apt-get install --yes bubblewrap
+  sudo apt-get install --yes apparmor-profiles apparmor-utils bubblewrap
+  apparmor_profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+  if test -f "$apparmor_profile"; then
+    sudo install -m 0644 "$apparmor_profile" /etc/apparmor.d/bwrap-userns-restrict
+    sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+  fi
+  bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net /bin/true
   sudo mkdir -p /run/sshd
   # GitHub's Linux runner account is locked even though sudo is available.
   # Public-key auth is still disabled for locked accounts, so clear the
