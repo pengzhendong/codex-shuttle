@@ -1417,16 +1417,16 @@ fn configure_child_process(command: &mut Command) {
     command.creation_flags(0x0800_0000 | 0x0000_0200);
 }
 
+#[cfg(unix)]
 async fn termination_signal() -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .context("could not listen for SIGTERM")?;
-        let _ = terminate.recv().await;
-        return Ok(());
-    }
-    #[cfg(windows)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("could not listen for SIGTERM")?;
+    let _ = terminate.recv().await;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn termination_signal() -> Result<()> {
     std::future::pending::<Result<()>>().await
 }
 
