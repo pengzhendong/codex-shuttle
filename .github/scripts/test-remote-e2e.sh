@@ -3,6 +3,17 @@ set -euo pipefail
 
 : "${CODEX_VERSION:?CODEX_VERSION is required}"
 
+report_error() {
+  status=$?
+  line=$1
+  command=$2
+  command=${command//'%'/'%25'}
+  command=${command//$'\r'/'%0D'}
+  command=${command//$'\n'/'%0A'}
+  echo "::error title=Remote E2E failure::line $line: $command (exit $status)"
+}
+trap 'report_error "$LINENO" "$BASH_COMMAND"' ERR
+
 kernel=$(uname -s)
 arch=$(uname -m)
 case "$kernel:$arch" in
