@@ -1345,6 +1345,7 @@ mod remote_probe_tests {
             "cxs-probe-remote\n/home/dev\nLinux\nx86_64\n",
             "noise\ncxs-probe-remote\n/home/dev\nLinux\naarch64\n",
             "cxs-probe-remote\n/home/dev\nDarwin\narm64\n",
+            "cxs-probe-remote\n/home/dev\nDarwin\nx86_64\n",
         ] {
             validate_remote_probe_stdout(stdout, "/home/dev").unwrap();
         }
@@ -1352,13 +1353,6 @@ mod remote_probe_tests {
 
     #[test]
     fn rejects_unsupported_or_malformed_remote_probe() {
-        assert!(
-            validate_remote_probe_stdout(
-                "cxs-probe-remote\n/Users/dev\nDarwin\nx86_64\n",
-                "/Users/dev"
-            )
-            .is_err()
-        );
         assert!(validate_remote_probe_stdout("Linux\naarch64\n", "/home/dev").is_err());
     }
 }

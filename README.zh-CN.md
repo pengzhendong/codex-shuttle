@@ -2,7 +2,7 @@
 
 # 🚀 Codex Shuttle
 
-**在 macOS 或 Windows 上保留 Codex 桌面体验，把实际工作放到 Linux 或 Apple Silicon macOS 服务器执行。**
+**在 macOS 或 Windows 上保留 Codex 桌面体验，把实际工作放到 Linux 或 macOS 服务器执行。**
 
 [English](README.md) · [架构](docs/architecture.md) · [故障排查](docs/troubleshooting.md) · [版本发布](https://github.com/pengzhendong/codex-shuttle/releases)
 
@@ -13,14 +13,14 @@
 [![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-000000?logo=apple)](#环境要求)
 [![Windows](https://img.shields.io/badge/Windows-x86__64-0078d4?logo=windows)](#环境要求)
 [![Linux](https://img.shields.io/badge/远程%20Linux-arm64%20%7C%20x86__64-fcc624?logo=linux&logoColor=black)](#环境要求)
-[![macOS 服务器](https://img.shields.io/badge/远程%20macOS-Apple%20Silicon-000000?logo=apple)](#环境要求)
+[![macOS 服务器](https://img.shields.io/badge/远程%20macOS-arm64%20%7C%20x86__64-000000?logo=apple)](#环境要求)
 
 > [!WARNING]
 > 这是非官方且仍在积极开发的项目，依赖版本敏感的 Codex App Server 和实验性的 Exec Server 接口。
 
 </div>
 
-Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux 或 Apple Silicon macOS SSH 主机。会话、账号状态和界面留在本地桌面；Shell、文件读写、搜索、Git 探测、PTY 和测试在远程主机运行。
+Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux 或 macOS SSH 主机。会话、账号状态和界面留在本地桌面；Shell、文件读写、搜索、Git 探测、PTY 和测试在远程主机运行。
 
 它复用现有 OpenSSH 配置，通过一条普通 SSH stdio 连接工作；不替换 SSH 服务、不需要 TCP 转发，也不需要把 Codex 登录凭据放到服务器。
 
@@ -38,11 +38,11 @@ Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux 或 Apple 
 
 | 本地桌面 | 远程服务器 |
 | --- | --- |
-| Apple Silicon/Intel macOS，或 x86_64 Windows | arm64/x86_64 Linux，或 Apple Silicon macOS |
+| Apple Silicon/Intel macOS，或 x86_64 Windows | arm64/x86_64 Linux 或 macOS |
 | 已安装 Codex 桌面 App | 支持免交互密钥登录的 OpenSSH |
 | OpenSSH 客户端 | `sh`、`curl`、`tar`，以及 Linux 的 `sha256sum` 或 macOS 的 `shasum` |
 
-Intel macOS 可作为桌面客户端，但不支持作为远程服务器。
+Apple Silicon 和 Intel macOS 均可作为桌面客户端或远程服务器。
 
 Shuttle 始终使用桌面 App 自带的 Codex，不会从 `PATH` 查找 `codex`。macOS 路径为 `/Applications/ChatGPT.app/Contents/Resources/codex`；Windows 会自动选择最新的 `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`。可以用 `CXS_CODEX_PATH` 覆盖自动发现。Shuttle Release 必须匹配这个内置二进制的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
 
@@ -156,7 +156,7 @@ shim 只拦截桌面 App Server 启动和 Shuttle 隐藏 agent 命令；其他 `
 
 ## 发布与兼容性
 
-GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。只有 macOS ARM64、Windows x64、Linux x64、Linux ARM64 的格式、Clippy 和全部 workspace 测试，以及每个受支持服务器平台的真实官方包 SSH 端到端测试全部通过，同时所有 CLI 与 shim 构建成功，才会发布绑定版本的 Shuttle Release。针对具体桌面端和服务器仍可用 `cxs doctor` 做实时检查。构建失败不会生成半成品，并会在下一轮自动重试。
+GitHub Actions 每天北京时间 08:17 检查一次 OpenAI 稳定 `rust-vX.Y.Z` 标签，并按顺序补齐每个尚未发布的版本。只有 macOS ARM64、macOS x64、Windows x64、Linux x64、Linux ARM64 的格式、Clippy 和全部 workspace 测试，以及每个受支持服务器平台的真实官方包 SSH 端到端测试全部通过，同时所有 CLI 与 shim 构建成功，才会发布绑定版本的 Shuttle Release。针对具体桌面端和服务器仍可用 `cxs doctor` 做实时检查。构建失败不会生成半成品，并会在下一轮自动重试。
 
 每个桌面 CLI 都内置完整 Shuttle Release 标签，从该不可变 Release 下载 shim，并从匹配的 OpenAI Release 下载官方 Codex。详见[发布与安装流程](docs/runtime-release.md)和[兼容性说明](docs/compatibility.md)。
 

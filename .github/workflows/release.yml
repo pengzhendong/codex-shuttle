@@ -71,7 +71,7 @@ jobs:
           printf '%s\n' "$codex_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           gh api "repos/openai/codex/git/ref/tags/rust-v${codex_version}" >/dev/null
           assets=$(gh api "repos/openai/codex/releases/tags/rust-v${codex_version}" --jq '.assets[].name')
-          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin; do
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
             printf '%s\n' "$assets" | grep -Fqx "codex-package-${target}.tar.gz"
           done
           printf '%s\n' "$assets" | grep -Fqx codex-package_SHA256SUMS
@@ -99,6 +99,9 @@ jobs:
           - runner: macos-15
             expected-os: macOS
             expected-arch: ARM64
+          - runner: macos-15-intel
+            expected-os: macOS
+            expected-arch: X64
           - runner: ubuntu-24.04
             expected-os: Linux
             expected-arch: X64
@@ -135,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+        runner: [macos-15, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -256,24 +259,33 @@ jobs:
   macos-shim:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
-    runs-on: macos-15
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            asset: cxs-shim-macos-aarch64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: cxs-shim-macos-x86_64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2.9.2
         with:
-          shared-key: macos-shim-aarch64
+          shared-key: macos-shim-${{ matrix.target }}
           add-job-id-key: false
-      - run: cargo build --locked --release -p cxs-shim --target aarch64-apple-darwin
+      - run: cargo build --locked --release -p cxs-shim --target ${{ matrix.target }}
       - run: |
           mkdir -p release-staging
-          cp target/aarch64-apple-darwin/release/cxs-shim release-staging/cxs-shim-macos-aarch64
+          cp target/${{ matrix.target }}/release/cxs-shim release-staging/${{ matrix.asset }}
       - uses: actions/cache/save@v5
         with:
-          path: release-staging/cxs-shim-macos-aarch64
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-macos-aarch64
+          path: release-staging/${{ matrix.asset }}
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
           enableCrossOsArchive: true
 
   publish:
@@ -317,6 +329,12 @@ jobs:
           key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-macos-aarch64
           enableCrossOsArchive: true
           fail-on-cache-miss: true
+      - uses: actions/cache/restore@v5
+        with:
+          path: release-staging/cxs-shim-macos-x86_64
+          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-macos-x86_64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
       - run: (cd release-staging && sha256sum cxs-* > SHA256SUMS)
       - name: Publish release assets
         uses: softprops/action-gh-release@v3
@@ -327,7 +345,7 @@ jobs:
           body: |
             ## Downloads
 
-            Most users only need the CLI for their desktop platform. `cxs install` automatically selects and installs the matching Linux or Apple Silicon macOS components.
+            Most users only need the CLI for their desktop platform. `cxs install` automatically selects and installs the matching Linux or macOS components.
 
             | macOS | Download | Purpose |
             | --- | --- | --- |
@@ -347,6 +365,7 @@ jobs:
             | [`cxs-shim-linux-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-aarch64) | SSH/Yamux shim for ARM64 Linux hosts |
             | [`cxs-shim-linux-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-x86_64) | SSH/Yamux shim for x86_64 Linux hosts |
             | [`cxs-shim-macos-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-macos-aarch64) | SSH/Yamux shim for Apple Silicon macOS hosts |
+            | [`cxs-shim-macos-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-macos-x86_64) | SSH/Yamux shim for Intel macOS hosts |
             | [`SHA256SUMS`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/SHA256SUMS) | SHA-256 checksums for every release asset |
 
             See the [installation guide](https://github.com/${{ github.repository }}#installation) for the recommended setup.

@@ -2,7 +2,7 @@
 
 Codex Shuttle does not compile or redistribute Codex. It uses the official,
 versioned packages published by OpenAI and releases only Shuttle's macOS and
-Windows CLIs plus the Linux and Apple Silicon macOS shims.
+Windows CLIs plus the Linux and macOS shims.
 
 ## Automatic Shuttle releases
 
@@ -11,10 +11,10 @@ Windows CLIs plus the Linux and Apple Silicon macOS shims.
 2. It selects the oldest version without a matching
    `v<shuttle-version>-codex.<codex-version>` Shuttle release.
 3. The workflow verifies that OpenAI published official packages for Linux
-   x86_64, Linux arm64, and Apple Silicon macOS. Formatting, Clippy, and all
-   workspace tests run natively on macOS ARM64, Windows x64, Linux x64, and
-   Linux ARM64. Real-package SSH end-to-end tests run on all three server targets.
-4. It publishes two macOS CLIs, one Windows CLI, three remote shims, and
+   x86_64, Linux arm64, Apple Silicon macOS, and Intel macOS. Formatting, Clippy,
+   and all workspace tests run natively on macOS ARM64, macOS x64, Windows x64,
+   Linux x64, and Linux ARM64. Real-package SSH end-to-end tests run on all four server targets.
+4. It publishes two macOS CLIs, one Windows CLI, four remote shims, and
    `SHA256SUMS`. No Codex source is
    checked out and no Codex runtime is compiled or stored by Shuttle.
 

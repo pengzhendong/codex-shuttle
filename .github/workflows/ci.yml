@@ -17,6 +17,9 @@ jobs:
           - runner: macos-15
             expected-os: macOS
             expected-arch: ARM64
+          - runner: macos-15-intel
+            expected-os: macOS
+            expected-arch: X64
           - runner: ubuntu-24.04
             expected-os: Linux
             expected-arch: X64
@@ -51,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+        runner: [macos-15, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:

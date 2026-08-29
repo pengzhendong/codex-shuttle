@@ -26,6 +26,9 @@ case "$kernel:$arch" in
   Darwin:arm64|Darwin:aarch64)
     target=aarch64-apple-darwin
     ;;
+  Darwin:x86_64|Darwin:amd64)
+    target=x86_64-apple-darwin
+    ;;
   *)
     echo "unsupported CI remote target $kernel $arch" >&2
     exit 1

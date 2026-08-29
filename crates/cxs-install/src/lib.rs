@@ -191,9 +191,11 @@ fn remote_platform(facts: &RemoteFacts) -> Result<RemotePlatform> {
             shim_asset: "cxs-shim-macos-aarch64",
             requires_bwrap: false,
         }),
-        ("Darwin", arch) => bail!(
-            "unsupported remote macOS architecture {arch}; only Apple Silicon arm64 is supported"
-        ),
+        ("Darwin", "x86_64" | "amd64") => Ok(RemotePlatform {
+            target: "x86_64-apple-darwin",
+            shim_asset: "cxs-shim-macos-x86_64",
+            requires_bwrap: false,
+        }),
         (kernel, arch) => bail!("unsupported remote platform {kernel} {arch}"),
     }
 }
@@ -929,6 +931,8 @@ mod platform_tests {
             ("Linux", "arm64", "aarch64-unknown-linux-musl"),
             ("Darwin", "aarch64", "aarch64-apple-darwin"),
             ("Darwin", "arm64", "aarch64-apple-darwin"),
+            ("Darwin", "x86_64", "x86_64-apple-darwin"),
+            ("Darwin", "amd64", "x86_64-apple-darwin"),
         ] {
             let facts = RemoteFacts {
                 home: "/remote/home".to_owned(),
@@ -941,11 +945,7 @@ mod platform_tests {
 
     #[test]
     fn rejects_unsupported_remote_targets() {
-        for (kernel, arch) in [
-            ("Darwin", "x86_64"),
-            ("Windows_NT", "x86_64"),
-            ("Linux", "riscv64"),
-        ] {
+        for (kernel, arch) in [("Windows_NT", "x86_64"), ("Linux", "riscv64")] {
             let facts = RemoteFacts {
                 home: "/remote/home".to_owned(),
                 kernel: kernel.to_owned(),

@@ -2,7 +2,7 @@
 
 # 🚀 Codex Shuttle
 
-**Keep the Codex desktop experience on macOS or Windows. Run the work on Linux or Apple Silicon macOS over SSH.**
+**Keep the Codex desktop experience on macOS or Windows. Run the work on Linux or macOS over SSH.**
 
 [简体中文](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Troubleshooting](docs/troubleshooting.md) · [Releases](https://github.com/pengzhendong/codex-shuttle/releases)
 
@@ -13,14 +13,14 @@
 [![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-000000?logo=apple)](#requirements)
 [![Windows](https://img.shields.io/badge/Windows-x86__64-0078d4?logo=windows)](#requirements)
 [![Linux](https://img.shields.io/badge/remote%20Linux-arm64%20%7C%20x86__64-fcc624?logo=linux&logoColor=black)](#requirements)
-[![macOS server](https://img.shields.io/badge/remote%20macOS-Apple%20Silicon-000000?logo=apple)](#requirements)
+[![macOS server](https://img.shields.io/badge/remote%20macOS-arm64%20%7C%20x86__64-000000?logo=apple)](#requirements)
 
 > [!WARNING]
 > Unofficial and under active development. Codex Shuttle depends on version-sensitive Codex App Server and experimental Exec Server interfaces.
 
 </div>
 
-Codex Shuttle (`cxs`) connects the Codex desktop app to an existing Linux or Apple Silicon macOS SSH host. Threads, account state, and the UI stay on your desktop; shells, files, search, Git discovery, PTYs, and tests run on the remote host.
+Codex Shuttle (`cxs`) connects the Codex desktop app to an existing Linux or macOS SSH host. Threads, account state, and the UI stay on your desktop; shells, files, search, Git discovery, PTYs, and tests run on the remote host.
 
 It uses your existing OpenSSH configuration and one ordinary SSH stdio connection—no SSH daemon replacement, TCP forwarding, or remote Codex login required.
 
@@ -38,11 +38,11 @@ It uses your existing OpenSSH configuration and one ordinary SSH stdio connectio
 
 | Local | Remote |
 | --- | --- |
-| macOS on Apple Silicon/Intel, or Windows on x86_64 | Linux on arm64/x86_64, or Apple Silicon macOS |
+| macOS on Apple Silicon/Intel, or Windows on x86_64 | Linux or macOS on arm64/x86_64 |
 | Codex desktop app installed | OpenSSH access with non-interactive key authentication |
 | OpenSSH client | `sh`, `curl`, `tar`, and `sha256sum` (Linux) or `shasum` (macOS) |
 
-Intel macOS is supported as a desktop client, but not as a remote server.
+Both Apple Silicon and Intel macOS are supported as desktop clients and remote servers.
 
 Shuttle uses the Codex binary bundled with the desktop app; it never resolves `codex` from `PATH`. On macOS this is `/Applications/ChatGPT.app/Contents/Resources/codex`. On Windows, Shuttle selects the newest `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`. Set `CXS_CODEX_PATH` to override discovery. The selected Shuttle release must match that binary's public source baseline. For example, a desktop build reporting `0.147.0-alpha.6.5` uses the Shuttle release for Codex `0.147.0`.
 
@@ -159,7 +159,7 @@ Read [Architecture](docs/architecture.md) for protocol details and [Dependency b
 GitHub Actions checks for stable OpenAI `rust-vX.Y.Z` tags daily at 00:17 UTC and
 processes every unpublished version in order. A version-bound Shuttle release
 is published only after formatting, Clippy, and all workspace tests pass on macOS ARM64,
-Windows x64, Linux x64, and Linux ARM64, and real-package SSH end-to-end tests pass on
+macOS x64, Windows x64, Linux x64, and Linux ARM64, and real-package SSH end-to-end tests pass on
 every supported server platform. The matching official Codex packages and Shuttle shims
 must also build successfully.
 These gates prove build compatibility;

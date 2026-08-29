@@ -2,6 +2,13 @@
 
 All notable changes to Codex Shuttle are documented here. The project follows semantic versioning once a stable public API exists.
 
+## 0.3.1 - 2026-08-29
+
+- Added Intel macOS as a supported remote server using OpenAI's official
+  `x86_64-apple-darwin` Codex package and `cxs-shim-macos-x86_64`.
+- Added native `macos-15-intel` formatting, Clippy, workspace, real-package SSH
+  end-to-end, shim build, and release coverage.
+
 ## 0.3.0 - 2026-08-29
 
 - Added Apple Silicon macOS as a supported remote server using OpenAI's official

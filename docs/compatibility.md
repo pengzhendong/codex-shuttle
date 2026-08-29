@@ -6,7 +6,7 @@ Shuttle verifies each Codex source version instead of assuming internal protocol
 
 - **Build-compatible**: official Codex packages exist and formatting, Clippy, all workspace tests, all CLI/shim builds, and real-package SSH lifecycle tests passed on every supported native target. Automated Releases provide this level.
 - **Ready on a host**: `cxs doctor` completed the live SSH handshake, App Server initialization, external Exec Server readiness check, remote directory read, and a remote `command/exec` probe for one profile.
-- **Matrix-verified**: the extended filesystem, process, PTY, diff, platform sandbox behavior, resume/fork, and disconnect-cleanup matrix passed on Linux x64, Linux ARM64, and Apple Silicon macOS.
+- **Matrix-verified**: the extended filesystem, process, PTY, diff, platform sandbox behavior, resume/fork, and disconnect-cleanup matrix passed on Linux x64, Linux ARM64, Apple Silicon macOS, and Intel macOS.
 
 Build compatibility is necessary but does not replace the per-host readiness check. A version must not be described as matrix-verified without recorded live results.
 
