@@ -2,11 +2,12 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::thread;
 
 use anyhow::{Context, Result, bail};
 use cxs_core::Profile;
-use cxs_ssh::RemoteFacts;
+use cxs_ssh::{RemoteFacts, batch_command};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -167,41 +168,45 @@ pub fn codex_source_version(version_output: &str) -> Result<&str> {
         .map_or(version, |(source_version, _)| source_version))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 struct RemotePlatform {
-    target: &'static str,
-    shim_asset: &'static str,
+    kernel: Option<String>,
+    uname_arches: Vec<String>,
+    rust_target: String,
+    remote: bool,
+    shim_asset: Option<String>,
     requires_bwrap: bool,
 }
 
-fn remote_platform(facts: &RemoteFacts) -> Result<RemotePlatform> {
-    match (facts.kernel.as_str(), facts.arch.as_str()) {
-        ("Linux", "x86_64" | "amd64") => Ok(RemotePlatform {
-            target: "x86_64-unknown-linux-musl",
-            shim_asset: "cxs-shim-linux-x86_64",
-            requires_bwrap: true,
-        }),
-        ("Linux", "aarch64" | "arm64") => Ok(RemotePlatform {
-            target: "aarch64-unknown-linux-musl",
-            shim_asset: "cxs-shim-linux-aarch64",
-            requires_bwrap: true,
-        }),
-        ("Darwin", "aarch64" | "arm64") => Ok(RemotePlatform {
-            target: "aarch64-apple-darwin",
-            shim_asset: "cxs-shim-macos-aarch64",
-            requires_bwrap: false,
-        }),
-        ("Darwin", "x86_64" | "amd64") => Ok(RemotePlatform {
-            target: "x86_64-apple-darwin",
-            shim_asset: "cxs-shim-macos-x86_64",
-            requires_bwrap: false,
-        }),
-        (kernel, arch) => bail!("unsupported remote platform {kernel} {arch}"),
-    }
+#[derive(Debug, Deserialize)]
+struct PlatformManifest {
+    platforms: Vec<RemotePlatform>,
+}
+
+static PLATFORM_MANIFEST: LazyLock<PlatformManifest> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../../runtime/platforms.json"))
+        .expect("bundled platform manifest must be valid")
+});
+
+fn remote_platform(facts: &RemoteFacts) -> Result<&'static RemotePlatform> {
+    PLATFORM_MANIFEST
+        .platforms
+        .iter()
+        .find(|platform| {
+            platform.remote
+                && platform.kernel.as_deref() == Some(facts.kernel.as_str())
+                && platform.uname_arches.iter().any(|arch| arch == &facts.arch)
+        })
+        .with_context(|| {
+            format!(
+                "unsupported remote platform {} {}",
+                facts.kernel, facts.arch
+            )
+        })
 }
 
 pub fn remote_target(facts: &RemoteFacts) -> Result<&'static str> {
-    remote_platform(facts).map(|platform| platform.target)
+    remote_platform(facts).map(|platform| platform.rust_target.as_str())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -212,7 +217,7 @@ pub fn install(
     options: &InstallOptions,
 ) -> Result<InstallRecord> {
     let platform = remote_platform(facts)?;
-    let target = platform.target;
+    let target = platform.rust_target.as_str();
     let version = codex_source_version(&profile.codex_version)?;
     let temporary = tempfile::tempdir().context("could not create installer workspace")?;
     let root = format!("{}/.local/lib/codex-shuttle", facts.home);
@@ -242,7 +247,10 @@ pub fn install(
         }
     };
 
-    let shim_name = platform.shim_asset;
+    let shim_name = platform
+        .shim_asset
+        .as_deref()
+        .context("supported remote platform has no shim asset")?;
     let shim = match &options.shim {
         Some(path) => canonical_file(path, "Shuttle shim")?,
         None => download_shim(
@@ -643,8 +651,8 @@ fn upload(host: &str, source: &Path, remote: &str) -> Result<()> {
     let file = File::open(source)
         .with_context(|| format!("could not open upload source {}", source.display()))?;
     let command = format!("umask 077; cat > {}", shell_quote(remote));
-    let status = Command::new("ssh")
-        .args(["-T", "-o", "BatchMode=yes", host, &command])
+    let status = batch_command(host)?
+        .arg(&command)
         .stdin(Stdio::from(file))
         .status()
         .with_context(|| format!("could not upload {} to {host}", source.display()))?;
@@ -661,9 +669,7 @@ fn cleanup_remote_temp(host: &str, paths: &[&str]) -> Result<()> {
         command.push_str(&shell_quote(path));
         command.push_str(" 2>/dev/null || true;");
     }
-    let status = Command::new("ssh")
-        .args(["-T", "-o", "BatchMode=yes", host, &command])
-        .status()?;
+    let status = batch_command(host)?.arg(&command).status()?;
     if !status.success() {
         bail!("could not clean remote installer files");
     }
@@ -675,8 +681,8 @@ fn run_ssh_script(host: &str, script: &str) -> Result<()> {
 }
 
 fn run_ssh_script_with_output(host: &str, script: &str) -> Result<Vec<u8>> {
-    let mut child = Command::new("ssh")
-        .args(["-T", "-o", "BatchMode=yes", host, "sh -s"])
+    let mut child = batch_command(host)?
+        .arg("sh -s")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -698,8 +704,8 @@ fn run_ssh_script_with_output(host: &str, script: &str) -> Result<Vec<u8>> {
 }
 
 fn ssh_output(host: &str, command: &str) -> Result<Vec<u8>> {
-    let output = Command::new("ssh")
-        .args(["-T", "-o", "BatchMode=yes", host, command])
+    let output = batch_command(host)?
+        .arg(command)
         .output()
         .with_context(|| format!("could not run remote check on {host}"))?;
     if !output.status.success() {

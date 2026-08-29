@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+cxs-ssh = { path = "../cxs-ssh" }
 rusqlite.workspace = true
 serde_json.workspace = true
 tar.workspace = true

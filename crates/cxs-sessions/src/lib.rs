@@ -4,10 +4,11 @@ use std::io::{self, Cursor, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use cxs_ssh::batch_command;
 use rusqlite::{Connection, TransactionBehavior, backup::Backup};
 use serde_json::Value;
 use tempfile::{NamedTempFile, TempDir};
@@ -316,16 +317,8 @@ fn receive_remote_rollouts(options: &SyncOptions<'_>, staging: &Path) -> Result<
     let script = format!(
         "set -eu; root={root}; if ! cd \"$root\" 2>/dev/null; then printf CXS0; exit 0; fi; set --; test ! -d sessions || set -- \"$@\" sessions; test ! -d archived_sessions || set -- \"$@\" archived_sessions; if test \"$#\" -eq 0; then printf CXS0; else tar -cf - \"$@\"; fi"
     );
-    let mut child = Command::new("ssh")
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            options.host,
-            &script,
-        ])
+    let mut child = batch_command(options.host)?
+        .arg(&script)
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not start SSH for '{}'", options.host))?;

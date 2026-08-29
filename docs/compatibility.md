@@ -10,9 +10,9 @@ Shuttle verifies each Codex source version instead of assuming internal protocol
 
 Build compatibility is necessary but does not replace the per-host readiness check. A version must not be described as matrix-verified without recorded live results.
 
-## Baseline validated contract: `codex-cli 0.147.0`
+## Version-qualified contract
 
-Verified locally on macOS arm64 and build/test-verified on Windows x86_64:
+This contract was first established with `codex-cli 0.147.0`. The automatic release workflow now rechecks it for every source version admitted by `runtime/codex-versions.txt` on every supported native target:
 
 - `codex app-server --stdio` accepts an initialize request with the `experimentalApi` capability.
 - The generated experimental schema contains `environment/add`, `environment/status`, `environment/info`, `TurnEnvironmentParams`, and sticky environments on `ThreadStartParams`.

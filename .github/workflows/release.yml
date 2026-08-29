@@ -14,7 +14,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  actions: write
+  actions: read
   contents: write
 
 concurrency:
@@ -28,8 +28,14 @@ jobs:
       codex-version: ${{ steps.version.outputs.codex-version }}
       release-tag: ${{ steps.version.outputs.release-tag }}
       should-publish: ${{ steps.version.outputs.should-publish }}
+      quality-matrix: ${{ steps.matrix.outputs.quality }}
+      remote-matrix: ${{ steps.matrix.outputs.remote }}
+      cli-matrix: ${{ steps.matrix.outputs.cli }}
+      shim-matrix: ${{ steps.matrix.outputs.shim }}
     steps:
       - uses: actions/checkout@v7
+      - id: matrix
+        run: bash .github/scripts/platform-matrices.sh
       - id: version
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,9 +77,9 @@ jobs:
           printf '%s\n' "$codex_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
           gh api "repos/openai/codex/git/ref/tags/rust-v${codex_version}" >/dev/null
           assets=$(gh api "repos/openai/codex/releases/tags/rust-v${codex_version}" --jq '.assets[].name')
-          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+          while read -r target; do
             printf '%s\n' "$assets" | grep -Fqx "codex-package-${target}.tar.gz"
-          done
+          done < <(jq -r '.platforms[] | select(.remote) | .rust_target' runtime/platforms.json)
           printf '%s\n' "$assets" | grep -Fqx codex-package_SHA256SUMS
 
           if test "$GITHUB_EVENT_NAME" = push; then
@@ -94,31 +100,15 @@ jobs:
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            expected-os: macOS
-            expected-arch: ARM64
-          - runner: macos-15-intel
-            expected-os: macOS
-            expected-arch: X64
-          - runner: ubuntu-24.04
-            expected-os: Linux
-            expected-arch: X64
-          - runner: ubuntu-24.04-arm
-            expected-os: Linux
-            expected-arch: ARM64
-          - runner: windows-2025
-            expected-os: Windows
-            expected-arch: X64
+      matrix: ${{ fromJSON(needs.prepare.outputs.quality-matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - name: Verify native runner architecture
         shell: bash
         run: |
-          test "$RUNNER_OS" = "${{ matrix.expected-os }}"
-          test "$RUNNER_ARCH" = "${{ matrix.expected-arch }}"
+          test "$RUNNER_OS" = "${{ matrix.expected_os }}"
+          test "$RUNNER_ARCH" = "${{ matrix.expected_arch }}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -137,8 +127,7 @@ jobs:
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        runner: [macos-15, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm]
+      matrix: ${{ fromJSON(needs.prepare.outputs.remote-matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -159,19 +148,17 @@ jobs:
         env:
           CODEX_VERSION: ${{ needs.prepare.outputs.codex-version }}
           CXS_CI_CACHE_DIR: ${{ runner.temp }}/codex-shuttle-package
+          CXS_REMOTE_TARGET: ${{ matrix.target }}
+          CXS_EXPECTED_KERNEL: ${{ matrix.kernel }}
+          CXS_EXPECTED_UNAME_ARCHES: ${{ matrix.uname_arches }}
         run: bash .github/scripts/test-remote-e2e.sh
 
-  mac-cli:
+  cli:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            asset: cxs-cli-macos-aarch64
-          - target: x86_64-apple-darwin
-            asset: cxs-cli-macos-x86_64
-    runs-on: macos-15
+      matrix: ${{ fromJSON(needs.prepare.outputs.cli-matrix) }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -181,54 +168,24 @@ jobs:
         with:
           shared-key: mac-cli-${{ matrix.target }}
           add-job-id-key: false
-      - run: cargo build --locked --release -p cxs-cli --target ${{ matrix.target }}
+      - shell: bash
+        run: cargo build --locked --release -p cxs-cli --target ${{ matrix.target }}
         env:
           CXS_RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
-      - run: |
-          mkdir -p release-staging
-          cp target/${{ matrix.target }}/release/cxs release-staging/${{ matrix.asset }}
-      - uses: actions/cache/save@v5
-        with:
-          path: release-staging/${{ matrix.asset }}
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
-          enableCrossOsArchive: true
-
-  windows-cli:
-    needs: prepare
-    if: needs.prepare.outputs.should-publish == 'true'
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.2
-        with:
-          shared-key: windows-cli-x86_64
-          add-job-id-key: false
-      - run: cargo build --locked --release -p cxs-cli
-        env:
-          CXS_RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
-      - shell: pwsh
+      - shell: bash
         run: |
-          New-Item -ItemType Directory -Path release-staging -Force | Out-Null
-          Copy-Item target/release/cxs.exe release-staging/cxs-cli-windows-x86_64.exe
-      - uses: actions/cache/save@v5
+          mkdir -p release-staging
+          cp target/${{ matrix.target }}/release/${{ matrix.source }} release-staging/${{ matrix.asset }}
+      - uses: actions/upload-artifact@v7
         with:
-          path: release-staging/cxs-cli-windows-x86_64.exe
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-windows-x86_64.exe
-          enableCrossOsArchive: true
+          name: release-${{ matrix.asset }}
+          path: release-staging/${{ matrix.asset }}
 
-  linux-shim:
+  shim:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
     strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            asset: cxs-shim-linux-x86_64
-            runner: ubuntu-24.04
-          - target: aarch64-unknown-linux-musl
-            asset: cxs-shim-linux-aarch64
-            runner: ubuntu-24.04-arm
+      matrix: ${{ fromJSON(needs.prepare.outputs.shim-matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -236,160 +193,81 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: mlugg/setup-zig@v2.2.1
+        if: matrix.builder == 'zig'
         with:
           version: 0.16.0
           use-cache: false
       - uses: taiki-e/install-action@v2.85.11
+        if: matrix.builder == 'zig'
         with:
           tool: cargo-zigbuild@0.23.0
       - uses: Swatinem/rust-cache@v2.9.2
         with:
-          shared-key: linux-shim-${{ matrix.target }}
+          shared-key: shim-${{ matrix.target }}
           add-job-id-key: false
-      - run: cargo zigbuild --locked --release -p cxs-shim --target ${{ matrix.target }}
+      - if: matrix.builder == 'zig'
+        run: cargo zigbuild --locked --release -p cxs-shim --target ${{ matrix.target }}
+      - if: matrix.builder == 'cargo'
+        run: cargo build --locked --release -p cxs-shim --target ${{ matrix.target }}
       - run: |
           mkdir -p release-staging
           cp target/${{ matrix.target }}/release/cxs-shim release-staging/${{ matrix.asset }}
-      - uses: actions/cache/save@v5
+      - uses: actions/upload-artifact@v7
         with:
+          name: release-${{ matrix.asset }}
           path: release-staging/${{ matrix.asset }}
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
-          enableCrossOsArchive: true
-
-  macos-shim:
-    needs: prepare
-    if: needs.prepare.outputs.should-publish == 'true'
-    strategy:
-      matrix:
-        include:
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            asset: cxs-shim-macos-aarch64
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            asset: cxs-shim-macos-x86_64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2.9.2
-        with:
-          shared-key: macos-shim-${{ matrix.target }}
-          add-job-id-key: false
-      - run: cargo build --locked --release -p cxs-shim --target ${{ matrix.target }}
-      - run: |
-          mkdir -p release-staging
-          cp target/${{ matrix.target }}/release/cxs-shim release-staging/${{ matrix.asset }}
-      - uses: actions/cache/save@v5
-        with:
-          path: release-staging/${{ matrix.asset }}
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset }}
-          enableCrossOsArchive: true
 
   publish:
-    needs: [prepare, quality, remote-e2e, mac-cli, windows-cli, linux-shim, macos-shim]
+    needs: [prepare, quality, remote-e2e, cli, shim]
     if: needs.prepare.outputs.should-publish == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/cache/restore@v5
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
-          path: release-staging/cxs-cli-macos-aarch64
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-macos-aarch64
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-cli-macos-x86_64
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-macos-x86_64
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-cli-windows-x86_64.exe
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-cli-windows-x86_64.exe
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-shim-linux-aarch64
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-linux-aarch64
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-shim-linux-x86_64
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-linux-x86_64
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-shim-macos-aarch64
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-macos-aarch64
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        with:
-          path: release-staging/cxs-shim-macos-x86_64
-          key: cxs-release-${{ github.run_id }}-${{ github.run_attempt }}-cxs-shim-macos-x86_64
-          enableCrossOsArchive: true
-          fail-on-cache-miss: true
+          pattern: release-*
+          path: release-staging
+          merge-multiple: true
       - run: (cd release-staging && sha256sum cxs-* > SHA256SUMS)
+      - name: Render release notes
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
+        run: |
+          {
+            echo '## Downloads'
+            echo
+            echo 'Most users only need the CLI for their desktop platform. `cxs install` automatically selects and installs the matching Linux or macOS components.'
+            echo
+            echo '| Platform | Download | Purpose |'
+            echo '| --- | --- | --- |'
+            jq -r '.platforms[] | select(.cli_asset != null) | [.runner_os, .runner_arch, .cli_asset] | @tsv' runtime/platforms.json |
+            while IFS=$'\t' read -r platform arch asset; do
+              printf '| %s %s | [`%s`](https://github.com/%s/releases/download/%s/%s) | Codex Shuttle CLI |\n' "$platform" "$arch" "$asset" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$asset"
+            done
+            echo
+            echo '## Installer components'
+            echo
+            echo 'The shim is downloaded automatically. The matching official Codex package is downloaded directly from [OpenAI Codex Releases](https://github.com/openai/codex/releases).'
+            echo
+            echo '| Platform | File | Purpose |'
+            echo '| --- | --- | --- |'
+            jq -r '.platforms[] | select(.remote) | [.runner_os, .runner_arch, .shim_asset] | @tsv' runtime/platforms.json |
+            while IFS=$'\t' read -r platform arch asset; do
+              printf '| %s %s | [`%s`](https://github.com/%s/releases/download/%s/%s) | SSH/Yamux remote shim |\n' "$platform" "$arch" "$asset" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$asset"
+            done
+            printf '| All | [`SHA256SUMS`](https://github.com/%s/releases/download/%s/SHA256SUMS) | SHA-256 checksums for every release asset |\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+            echo
+            echo 'See the [installation guide](https://github.com/'"$GITHUB_REPOSITORY"'#installation) for the recommended setup.'
+          } > release-notes.md
       - name: Publish release assets
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.release-tag }}
           target_commitish: ${{ github.sha }}
           name: Codex Shuttle for Codex ${{ needs.prepare.outputs.codex-version }}
-          body: |
-            ## Downloads
-
-            Most users only need the CLI for their desktop platform. `cxs install` automatically selects and installs the matching Linux or macOS components.
-
-            | macOS | Download | Purpose |
-            | --- | --- | --- |
-            | Apple Silicon (M1–M4) | [`cxs-cli-macos-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-macos-aarch64) | Codex Shuttle CLI |
-            | Intel | [`cxs-cli-macos-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-macos-x86_64) | Codex Shuttle CLI |
-
-            | Windows | Download | Purpose |
-            | --- | --- | --- |
-            | x86_64 | [`cxs-cli-windows-x86_64.exe`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-cli-windows-x86_64.exe) | Codex Shuttle CLI |
-
-            ## Installer components
-
-            The shim is downloaded automatically. The matching official Codex package is downloaded directly from [OpenAI Codex Releases](https://github.com/openai/codex/releases).
-
-            | File | Purpose |
-            | --- | --- |
-            | [`cxs-shim-linux-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-aarch64) | SSH/Yamux shim for ARM64 Linux hosts |
-            | [`cxs-shim-linux-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-linux-x86_64) | SSH/Yamux shim for x86_64 Linux hosts |
-            | [`cxs-shim-macos-aarch64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-macos-aarch64) | SSH/Yamux shim for Apple Silicon macOS hosts |
-            | [`cxs-shim-macos-x86_64`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/cxs-shim-macos-x86_64) | SSH/Yamux shim for Intel macOS hosts |
-            | [`SHA256SUMS`](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.release-tag }}/SHA256SUMS) | SHA-256 checksums for every release asset |
-
-            See the [installation guide](https://github.com/${{ github.repository }}#installation) for the recommended setup.
+          body_path: release-notes.md
           generate_release_notes: true
           files: |
             release-staging/cxs-cli-*
             release-staging/cxs-shim-*
             release-staging/SHA256SUMS
-      - name: Delete published staging caches
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cache_prefix="cxs-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
-          gh api --paginate \
-            "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
-            --jq '.actions_caches[] | [.id, .key] | @tsv' |
-          while IFS=$'\t' read -r cache_id cache_key; do
-            test -n "$cache_id" || continue
-            case "$cache_key" in
-              "$cache_prefix"*) ;;
-              *) continue ;;
-            esac
-            gh api --method DELETE \
-              "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}"
-          done

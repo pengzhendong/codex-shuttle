@@ -31,7 +31,7 @@ The same adapter enables the experimental API, registers the execution environme
 
 ## Version-sensitive upstream boundary
 
-The baseline validated Codex version, 0.147.0, exposes an experimental `exec-server` WebSocket transport. Its generated experimental App Server schema includes `environment/add`, `environment/status`, and sticky `environments` fields on thread and turn requests. Shuttle uses these generated contracts instead of relying on the draft `[[environments]] program/args` configuration. Each Shuttle release is qualified against one matching `rust-vX.Y.Z` release because generated schemas and executable behavior can differ by version.
+Every Codex version admitted by `runtime/codex-versions.txt` must expose the experimental `exec-server` WebSocket transport. Its generated experimental App Server schema includes `environment/add`, `environment/status`, and sticky `environments` fields on thread and turn requests. Shuttle checks those generated contracts instead of relying on the draft `[[environments]] program/args` configuration. Each Shuttle release is qualified against one matching `rust-vX.Y.Z` release because generated schemas and executable behavior can differ by version.
 
 After the desktop client initializes App Server, the bridge sends:
 

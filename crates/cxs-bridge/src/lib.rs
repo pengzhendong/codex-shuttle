@@ -14,6 +14,7 @@ use cxs_core::{
     SHIM_PROTOCOL_VERSION, ShimHandshake, ShimTransport, routing,
 };
 use cxs_mux::{ChannelKind, MuxHandle, MuxSession};
+use cxs_ssh::batch_arguments;
 use futures_util::{SinkExt, StreamExt};
 #[cfg(unix)]
 use nix::sys::signal::{Signal, killpg};
@@ -50,6 +51,106 @@ enum RequestRoute {
     ThreadStart,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvironmentPhase {
+    WaitingForInitialize,
+    Registering,
+    Polling { attempts: u16 },
+    Ready,
+}
+
+struct EnvironmentRegistration {
+    initialize_id: Option<Value>,
+    phase: EnvironmentPhase,
+    add_request_id: String,
+    status_request_id: String,
+}
+
+impl EnvironmentRegistration {
+    fn new(profile: &Profile) -> Self {
+        Self {
+            initialize_id: None,
+            phase: EnvironmentPhase::WaitingForInitialize,
+            add_request_id: format!("cxs/{}/environment-add", profile.environment_id),
+            status_request_id: format!("cxs/{}/environment-status", profile.environment_id),
+        }
+    }
+
+    fn initialize_id_mut(&mut self) -> &mut Option<Value> {
+        &mut self.initialize_id
+    }
+
+    fn has_initialize_request(&self) -> bool {
+        self.initialize_id.is_some()
+    }
+
+    fn is_ready(&self) -> bool {
+        self.phase == EnvironmentPhase::Ready
+    }
+
+    fn is_initialize_response(&self, message: &Value) -> bool {
+        self.phase == EnvironmentPhase::WaitingForInitialize
+            && self
+                .initialize_id
+                .as_ref()
+                .is_some_and(|id| message.get("id") == Some(id))
+    }
+
+    fn begin_registration(&mut self, message: &Value, profile: &Profile) -> Result<Value> {
+        if let Some(error) = message.get("error") {
+            bail!("app-server initialize failed: {error}");
+        }
+        self.phase = EnvironmentPhase::Registering;
+        Ok(json!({
+            "id": self.add_request_id.clone(),
+            "method": "environment/add",
+            "params": {
+                "environmentId": profile.environment_id,
+                "execServerUrl": format!("ws://127.0.0.1:{}", profile.local_exec_port),
+                "connectTimeoutMs": 10_000
+            }
+        }))
+    }
+
+    fn is_add_response(&self, message: &Value) -> bool {
+        message.get("id").and_then(Value::as_str) == Some(self.add_request_id.as_str())
+    }
+
+    fn begin_status_poll(&mut self, message: &Value, profile: &Profile) -> Result<Value> {
+        if let Some(error) = message.get("error") {
+            bail!("environment/add failed: {error}");
+        }
+        self.phase = EnvironmentPhase::Polling { attempts: 1 };
+        Ok(environment_status_request(&self.status_request_id, profile))
+    }
+
+    fn is_status_response(&self, message: &Value) -> bool {
+        message.get("id").and_then(Value::as_str) == Some(self.status_request_id.as_str())
+    }
+
+    fn handle_status_response(
+        &mut self,
+        message: &Value,
+        profile: &Profile,
+    ) -> Result<Option<Value>> {
+        if environment_status_ready(message)? {
+            self.phase = EnvironmentPhase::Ready;
+            return Ok(None);
+        }
+        let EnvironmentPhase::Polling { attempts } = &mut self.phase else {
+            bail!("received environment/status outside registration polling");
+        };
+        *attempts += 1;
+        if *attempts > 200 {
+            bail!("execution environment did not become ready within 10 seconds");
+        }
+        Ok(Some(environment_status_request(
+            &self.status_request_id,
+            profile,
+        )))
+    }
+}
+
 struct PendingThreadMetadata {
     client_id: Value,
     local_request: Value,
@@ -73,15 +174,8 @@ pub async fn serve(profile: Profile, store: ProfileStore, codex: PathBuf) -> Res
 async fn start_agent(profile: &Profile, expected_token: &str) -> Result<(MuxSession, Child)> {
     let mut child = Command::new("ssh");
     child
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            &profile.app_alias,
-            "$HOME/.local/lib/codex-shuttle/current/cxs-shim __cxs-agent --replace",
-        ])
+        .args(batch_arguments(&profile.app_alias)?)
+        .arg("$HOME/.local/lib/codex-shuttle/current/cxs-shim __cxs-agent --replace")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -450,13 +544,8 @@ where
     let (mut server_write, mut server_read) = upstream.split();
     let (host_read, mut host_write) = tokio::io::split(host);
     let mut host_read = BufReader::new(host_read);
-    let internal_request_id = format!("cxs/{}/environment-add", profile.environment_id);
-    let internal_status_id = format!("cxs/{}/environment-status", profile.environment_id);
     let host_initialize_id = format!("cxs/{}/host-initialize", profile.environment_id);
-    let mut initialize_id: Option<Value> = None;
-    let mut environment_request_sent = false;
-    let mut environment_ready = false;
-    let mut environment_status_attempts = 0_u16;
+    let mut registration = EnvironmentRegistration::new(profile);
     let mut local_initialize_response: Option<Value> = None;
     let mut host_initialize_response: Option<Value> = None;
     let mut initialize_response_sent = false;
@@ -471,7 +560,11 @@ where
                 let Some(message) = message else { return Ok(()); };
                 let message = message.context("invalid App WebSocket frame")?;
                 if let Message::Text(text) = message {
-                    let rewritten = rewrite_client_message(text.as_bytes(), profile, &mut initialize_id)?;
+                    let rewritten = rewrite_client_message(
+                        text.as_bytes(),
+                        profile,
+                        registration.initialize_id_mut(),
+                    )?;
                     let value = serde_json::from_slice::<Value>(&rewritten)?;
                     let method = value
                         .get("method")
@@ -484,8 +577,8 @@ where
                         host_initialize["id"] = Value::String(host_initialize_id.clone());
                         write_line(&mut host_write, &serde_json::to_vec(&host_initialize)?).await?;
                         server_write.send(Message::Text(rewritten.into())).await?;
-                    } else if initialize_id.is_some()
-                        && (!environment_ready || !initialize_response_sent)
+                    } else if registration.has_initialize_request()
+                        && (!registration.is_ready() || !initialize_response_sent)
                     {
                         pending_client_bytes = pending_client_bytes.saturating_add(rewritten.len());
                         if pending_client_bytes > MAX_PENDING_CLIENT_BYTES {
@@ -513,75 +606,44 @@ where
                 if let Message::Text(text) = &message {
                     let value: Value = serde_json::from_str(text)
                         .context("app-server emitted invalid WebSocket JSON")?;
-                    if value.get("id").and_then(Value::as_str) == Some(internal_request_id.as_str()) {
-                        if let Some(error) = value.get("error") {
-                            bail!("environment/add failed: {error}");
-                        }
+                    if registration.is_add_response(&value) {
+                        let status_request = registration.begin_status_poll(&value, profile)?;
                         server_write
                             .send(Message::Text(
-                                serde_json::to_string(&environment_status_request(
-                                    &internal_status_id,
-                                    profile,
-                                ))?
-                                .into(),
+                                serde_json::to_string(&status_request)?.into(),
                             ))
                             .await?;
-                        environment_status_attempts = 1;
                         continue;
                     }
-                    if value.get("id").and_then(Value::as_str) == Some(internal_status_id.as_str()) {
-                        if environment_status_ready(&value)? {
-                            environment_ready = true;
-                            if initialize_response_sent {
-                                while let Some((pending, route)) = pending_client_messages.pop_front() {
-                                    pending_client_bytes = pending_client_bytes.saturating_sub(pending.len());
-                                    forward_client_message(
-                                        pending,
-                                        route,
-                                        &mut server_write,
-                                        &mut host_write,
-                                        &mut pending_thread_metadata,
-                                        &mut metadata_sequence,
-                                        profile,
-                                    ).await?;
-                                }
-                            }
-                        } else {
-                            environment_status_attempts += 1;
-                            if environment_status_attempts > 200 {
-                                bail!("execution environment did not become ready within 10 seconds");
-                            }
+                    if registration.is_status_response(&value) {
+                        if let Some(status_request) = registration.handle_status_response(&value, profile)? {
                             tokio::time::sleep(Duration::from_millis(50)).await;
                             server_write
                                 .send(Message::Text(
-                                    serde_json::to_string(&environment_status_request(
-                                        &internal_status_id,
-                                        profile,
-                                    ))?
-                                    .into(),
+                                    serde_json::to_string(&status_request)?.into(),
                                 ))
                                 .await?;
+                        } else if initialize_response_sent {
+                            while let Some((pending, route)) = pending_client_messages.pop_front() {
+                                pending_client_bytes = pending_client_bytes.saturating_sub(pending.len());
+                                forward_client_message(
+                                    pending,
+                                    route,
+                                    &mut server_write,
+                                    &mut host_write,
+                                    &mut pending_thread_metadata,
+                                    &mut metadata_sequence,
+                                    profile,
+                                ).await?;
+                            }
                         }
                         continue;
                     }
-                    let is_initialize_response = !environment_request_sent
-                        && initialize_id.as_ref().is_some_and(|id| value.get("id") == Some(id));
+                    let is_initialize_response = registration.is_initialize_response(&value);
                     if is_initialize_response {
-                        if let Some(error) = value.get("error") {
-                            bail!("app-server initialize failed: {error}");
-                        }
+                        let add_environment = registration.begin_registration(&value, profile)?;
                         local_initialize_response = Some(value);
-                        let add_environment = json!({
-                            "id": internal_request_id,
-                            "method": "environment/add",
-                            "params": {
-                                "environmentId": profile.environment_id,
-                                "execServerUrl": format!("ws://127.0.0.1:{}", profile.local_exec_port),
-                                "connectTimeoutMs": 10_000
-                            }
-                        });
                         server_write.send(Message::Text(serde_json::to_string(&add_environment)?.into())).await?;
-                        environment_request_sent = true;
                     } else if let Some(metadata_id) = pending_thread_metadata
                         .iter()
                         .find(|(_, pending)| {
@@ -734,7 +796,7 @@ where
             initialize_response_sent = true;
         }
 
-        if environment_ready && initialize_response_sent {
+        if registration.is_ready() && initialize_response_sent {
             while let Some((pending, route)) = pending_client_messages.pop_front() {
                 pending_client_bytes = pending_client_bytes.saturating_sub(pending.len());
                 forward_client_message(
@@ -1067,12 +1129,7 @@ where
     SR: AsyncBufRead + Unpin,
     SW: AsyncWrite + Unpin,
 {
-    let internal_request_id = format!("cxs/{}/environment-add", profile.environment_id);
-    let internal_status_id = format!("cxs/{}/environment-status", profile.environment_id);
-    let mut initialize_id: Option<Value> = None;
-    let mut environment_request_sent = false;
-    let mut environment_ready = false;
-    let mut environment_status_attempts = 0_u16;
+    let mut registration = EnvironmentRegistration::new(profile);
     let mut pending_client_lines: VecDeque<Vec<u8>> = VecDeque::new();
     let mut pending_client_bytes = 0_usize;
 
@@ -1080,12 +1137,16 @@ where
         tokio::select! {
             line = read_bounded_line(client_read, MAX_JSON_LINE_BYTES) => {
                 let Some(line) = line? else { return Ok(()); };
-                let rewritten = rewrite_client_message(&line, profile, &mut initialize_id)?;
+                let rewritten = rewrite_client_message(
+                    &line,
+                    profile,
+                    registration.initialize_id_mut(),
+                )?;
                 let is_initialize = serde_json::from_slice::<Value>(&rewritten)?
                     .get("method")
                     .and_then(Value::as_str)
                     == Some("initialize");
-                if initialize_id.is_some() && !environment_ready && !is_initialize {
+                if registration.has_initialize_request() && !registration.is_ready() && !is_initialize {
                     pending_client_bytes = pending_client_bytes.saturating_add(rewritten.len());
                     if pending_client_bytes > MAX_PENDING_CLIENT_BYTES {
                         bail!("client sent too much data before the execution environment became ready");
@@ -1099,64 +1160,33 @@ where
                 let Some(line) = line? else { return Ok(()); };
                 let message: Value = serde_json::from_slice(&line)
                     .context("app-server emitted invalid JSONL")?;
-                if message.get("id").and_then(Value::as_str) == Some(internal_request_id.as_str()) {
-                    if let Some(error) = message.get("error") {
-                        bail!("environment/add failed: {error}");
-                    }
+                if registration.is_add_response(&message) {
+                    let status_request = registration.begin_status_poll(&message, profile)?;
                     write_line(
                         server_write,
-                        &serde_json::to_vec(&environment_status_request(
-                            &internal_status_id,
-                            profile,
-                        ))?,
+                        &serde_json::to_vec(&status_request)?,
                     )
                     .await?;
-                    environment_status_attempts = 1;
                     continue;
                 }
-                if message.get("id").and_then(Value::as_str) == Some(internal_status_id.as_str()) {
-                    if environment_status_ready(&message)? {
-                        environment_ready = true;
+                if registration.is_status_response(&message) {
+                    if let Some(status_request) = registration.handle_status_response(&message, profile)? {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        write_line(server_write, &serde_json::to_vec(&status_request)?).await?;
+                    } else {
                         while let Some(pending) = pending_client_lines.pop_front() {
                             pending_client_bytes = pending_client_bytes.saturating_sub(pending.len());
                             write_line(server_write, &pending).await?;
                         }
-                    } else {
-                        environment_status_attempts += 1;
-                        if environment_status_attempts > 200 {
-                            bail!("execution environment did not become ready within 10 seconds");
-                        }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        write_line(
-                            server_write,
-                            &serde_json::to_vec(&environment_status_request(
-                                &internal_status_id,
-                                profile,
-                            ))?,
-                        )
-                        .await?;
                     }
                     continue;
                 }
 
-                let is_initialize_response = !environment_request_sent
-                    && initialize_id.as_ref().is_some_and(|id| message.get("id") == Some(id));
+                let is_initialize_response = registration.is_initialize_response(&message);
                 write_line(client_write, &line).await?;
                 if is_initialize_response {
-                    if let Some(error) = message.get("error") {
-                        bail!("app-server initialize failed: {error}");
-                    }
-                    let add_environment = json!({
-                        "id": internal_request_id,
-                        "method": "environment/add",
-                        "params": {
-                            "environmentId": profile.environment_id,
-                            "execServerUrl": format!("ws://127.0.0.1:{}", profile.local_exec_port),
-                            "connectTimeoutMs": 10_000
-                        }
-                    });
+                    let add_environment = registration.begin_registration(&message, profile)?;
                     write_line(server_write, &serde_json::to_vec(&add_environment)?).await?;
-                    environment_request_sent = true;
                 }
             }
         }
@@ -1507,6 +1537,48 @@ mod tests {
             executor_source: None,
             executor_path: None,
         }
+    }
+
+    #[test]
+    fn environment_registration_has_explicit_transitions() -> Result<()> {
+        let profile = profile();
+        let mut registration = EnvironmentRegistration::new(&profile);
+        *registration.initialize_id_mut() = Some(json!(1));
+
+        let initialize_response = json!({"id": 1, "result": {}});
+        assert!(registration.is_initialize_response(&initialize_response));
+        let add = registration.begin_registration(&initialize_response, &profile)?;
+        assert_eq!(add["method"], "environment/add");
+        assert_eq!(registration.phase, EnvironmentPhase::Registering);
+
+        let add_response = json!({"id": add["id"], "result": {}});
+        assert!(registration.is_add_response(&add_response));
+        let status = registration.begin_status_poll(&add_response, &profile)?;
+        assert_eq!(status["method"], "environment/status");
+        assert_eq!(
+            registration.phase,
+            EnvironmentPhase::Polling { attempts: 1 }
+        );
+
+        let waiting = json!({"id": status["id"], "result": {"status": "starting"}});
+        assert!(
+            registration
+                .handle_status_response(&waiting, &profile)?
+                .is_some()
+        );
+        assert_eq!(
+            registration.phase,
+            EnvironmentPhase::Polling { attempts: 2 }
+        );
+
+        let ready = json!({"id": status["id"], "result": {"status": "ready"}});
+        assert!(
+            registration
+                .handle_status_response(&ready, &profile)?
+                .is_none()
+        );
+        assert!(registration.is_ready());
+        Ok(())
     }
 
     #[tokio::test]

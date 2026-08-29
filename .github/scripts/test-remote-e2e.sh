@@ -2,6 +2,9 @@
 set -euo pipefail
 
 : "${CODEX_VERSION:?CODEX_VERSION is required}"
+: "${CXS_REMOTE_TARGET:?CXS_REMOTE_TARGET is required}"
+: "${CXS_EXPECTED_KERNEL:?CXS_EXPECTED_KERNEL is required}"
+: "${CXS_EXPECTED_UNAME_ARCHES:?CXS_EXPECTED_UNAME_ARCHES is required}"
 
 report_error() {
   status=$?
@@ -16,24 +19,15 @@ trap 'report_error "$LINENO" "$BASH_COMMAND"' ERR
 
 kernel=$(uname -s)
 arch=$(uname -m)
-case "$kernel:$arch" in
-  Linux:x86_64)
-    target=x86_64-unknown-linux-musl
-    ;;
-  Linux:aarch64|Linux:arm64)
-    target=aarch64-unknown-linux-musl
-    ;;
-  Darwin:arm64|Darwin:aarch64)
-    target=aarch64-apple-darwin
-    ;;
-  Darwin:x86_64|Darwin:amd64)
-    target=x86_64-apple-darwin
-    ;;
+test "$kernel" = "$CXS_EXPECTED_KERNEL"
+case ",$CXS_EXPECTED_UNAME_ARCHES," in
+  *",$arch,"*) ;;
   *)
-    echo "unsupported CI remote target $kernel $arch" >&2
+    echo "runner architecture $arch is not in $CXS_EXPECTED_UNAME_ARCHES" >&2
     exit 1
     ;;
 esac
+target=$CXS_REMOTE_TARGET
 
 package_name="codex-package-${target}.tar.gz"
 release_base="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}"

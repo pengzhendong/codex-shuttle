@@ -9,34 +9,29 @@ on:
   pull_request:
 
 jobs:
+  platforms:
+    runs-on: ubuntu-24.04
+    outputs:
+      quality: ${{ steps.matrix.outputs.quality }}
+      remote: ${{ steps.matrix.outputs.remote }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: matrix
+        run: bash .github/scripts/platform-matrices.sh
+
   rust:
+    needs: platforms
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            expected-os: macOS
-            expected-arch: ARM64
-          - runner: macos-15-intel
-            expected-os: macOS
-            expected-arch: X64
-          - runner: ubuntu-24.04
-            expected-os: Linux
-            expected-arch: X64
-          - runner: ubuntu-24.04-arm
-            expected-os: Linux
-            expected-arch: ARM64
-          - runner: windows-2025
-            expected-os: Windows
-            expected-arch: X64
+      matrix: ${{ fromJSON(needs.platforms.outputs.quality) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - name: Verify native runner architecture
         shell: bash
         run: |
-          test "$RUNNER_OS" = "${{ matrix.expected-os }}"
-          test "$RUNNER_ARCH" = "${{ matrix.expected-arch }}"
+          test "$RUNNER_OS" = "${{ matrix.expected_os }}"
+          test "$RUNNER_ARCH" = "${{ matrix.expected_arch }}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -51,10 +46,10 @@ jobs:
         run: bash .github/scripts/test-workspace.sh
 
   remote-e2e:
+    needs: platforms
     strategy:
       fail-fast: false
-      matrix:
-        runner: [macos-15, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm]
+      matrix: ${{ fromJSON(needs.platforms.outputs.remote) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -72,6 +67,10 @@ jobs:
           key: codex-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/codex-versions.txt') }}
       - name: Exercise install, bridge, SSH, and doctor end to end
         shell: bash
+        env:
+          CXS_REMOTE_TARGET: ${{ matrix.target }}
+          CXS_EXPECTED_KERNEL: ${{ matrix.kernel }}
+          CXS_EXPECTED_UNAME_ARCHES: ${{ matrix.uname_arches }}
         run: |
           CODEX_VERSION=$(sed -n '/^[0-9][0-9.]*$/p' runtime/codex-versions.txt | tail -n 1)
           export CODEX_VERSION

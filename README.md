@@ -116,7 +116,7 @@ Run `cxs <command> --help` for all user-facing options.
 
 ## Session sync
 
-Sessions normally remain desktop-owned. If you previously ran Codex directly on the Linux host, import its rollout files with:
+Sessions normally remain desktop-owned. If you previously ran Codex directly on the remote host, import its rollout files with:
 
 ```bash
 cxs sync devbox

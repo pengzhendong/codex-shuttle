@@ -22,6 +22,11 @@ A failed build creates no partial release and is retried by the next scheduled
 run. `workflow_dispatch` can publish a specific stable version. Older releases
 remain available for older desktop-bundled Codex versions.
 
+The supported runner, Rust target, architecture alias, CLI asset, and shim
+asset mapping lives in `runtime/platforms.json`. The installer and both CI
+workflows consume that manifest so a platform cannot be added to only one
+stage of the release process.
+
 ## Install and activation
 
 1. `cxs install` reads the Codex version bundled with ChatGPT Desktop, derives

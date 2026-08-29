@@ -21,7 +21,7 @@ use cxs_core::{
 use cxs_install::{InstallOptions, RemoteInstall};
 use cxs_probe::{codex_version, local_codex_checks};
 use cxs_ssh::{
-    RemoteFacts, SshSnapshot, ensure_managed_include, query_remote, render_host,
+    RemoteFacts, SshSnapshot, batch_arguments, ensure_managed_include, query_remote, render_host,
     rewrite_managed_config, test_connection,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -1037,15 +1037,8 @@ async fn probe_ready_inner(
     let bootstrap = tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new("ssh")
-            .args([
-                "-T",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=10",
-                &profile.app_alias,
-                &bootstrap_command,
-            ])
+            .args(batch_arguments(&profile.app_alias)?)
+            .arg(&bootstrap_command)
             .status(),
     )
     .await
@@ -1058,15 +1051,8 @@ async fn probe_ready_inner(
         r#"CXS_CONTROL_SOCKET="{probe_control_socket}" "$HOME/.local/bin/codex" app-server proxy"#
     );
     let mut child = tokio::process::Command::new("ssh")
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            &profile.app_alias,
-            &proxy_command,
-        ])
+        .args(batch_arguments(&profile.app_alias)?)
+        .arg(&proxy_command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1253,15 +1239,8 @@ async fn cleanup_remote_probe(
     let status = tokio::time::timeout(
         Duration::from_secs(10),
         tokio::process::Command::new("ssh")
-            .args([
-                "-T",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=10",
-                &profile.app_alias,
-                &cleanup_command,
-            ])
+            .args(batch_arguments(&profile.app_alias)?)
+            .arg(&cleanup_command)
             .status(),
     )
     .await

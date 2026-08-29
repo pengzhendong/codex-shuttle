@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write as IoWrite};
 #[cfg(unix)]
@@ -12,6 +13,25 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 const INCLUDE_LINE: &str = "Include ~/.ssh/codex-shuttle.conf";
+const BATCH_CONNECT_TIMEOUT_SECONDS: u16 = 10;
+
+pub fn batch_arguments(host: &str) -> Result<Vec<OsString>> {
+    validate_host_alias(host)?;
+    Ok(vec![
+        OsString::from("-T"),
+        OsString::from("-o"),
+        OsString::from("BatchMode=yes"),
+        OsString::from("-o"),
+        OsString::from(format!("ConnectTimeout={BATCH_CONNECT_TIMEOUT_SECONDS}")),
+        OsString::from(host),
+    ])
+}
+
+pub fn batch_command(host: &str) -> Result<Command> {
+    let mut command = Command::new("ssh");
+    command.args(batch_arguments(host)?);
+    Ok(command)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SshSnapshot {
@@ -63,17 +83,8 @@ impl SshSnapshot {
 }
 
 pub fn test_connection(source_host: &str) -> Result<()> {
-    validate_host_alias(source_host)?;
-    let status = Command::new("ssh")
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            source_host,
-            "true",
-        ])
+    let status = batch_command(source_host)?
+        .arg("true")
         .status()
         .with_context(|| format!("could not run ssh for host '{source_host}'"))?;
     if !status.success() {
@@ -83,18 +94,9 @@ pub fn test_connection(source_host: &str) -> Result<()> {
 }
 
 pub fn query_remote(source_host: &str) -> Result<RemoteFacts> {
-    validate_host_alias(source_host)?;
     let script = "printf 'home=%s\\n' \"$HOME\"; printf 'kernel=%s\\n' \"$(uname -s)\"; printf 'arch=%s\\n' \"$(uname -m)\"";
-    let output = Command::new("ssh")
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            source_host,
-            script,
-        ])
+    let output = batch_command(source_host)?
+        .arg(script)
         .output()
         .with_context(|| format!("could not query SSH host '{source_host}'"))?;
     if !output.status.success() {
@@ -444,6 +446,27 @@ mod tests {
     use cxs_core::{PROFILE_SCHEMA_VERSION, ProfileStatus};
 
     use super::*;
+
+    #[test]
+    fn builds_one_validated_batch_ssh_policy() -> Result<()> {
+        let arguments = batch_arguments("gpu-server")?
+            .into_iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            [
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "gpu-server"
+            ]
+        );
+        assert!(batch_arguments("gpu\nserver").is_err());
+        Ok(())
+    }
 
     fn profile() -> Profile {
         Profile {

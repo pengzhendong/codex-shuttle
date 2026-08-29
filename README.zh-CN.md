@@ -116,7 +116,7 @@ cxs install devbox --local-download
 
 ## Session 同步
 
-正常情况下，session 由桌面端持有。如果之前直接在 Linux 上运行过 Codex，可以导入服务器的 rollout：
+正常情况下，session 由桌面端持有。如果之前直接在远程主机上运行过 Codex，可以导入服务器的 rollout：
 
 ```bash
 cxs sync devbox

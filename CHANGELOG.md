@@ -2,6 +2,17 @@
 
 All notable changes to Codex Shuttle are documented here. The project follows semantic versioning once a stable public API exists.
 
+## Unreleased
+
+- Centralized native runner, Rust target, remote architecture, CLI asset, and
+  shim asset metadata in `runtime/platforms.json` for the installer and CI.
+- Replaced release cache handoffs with workflow artifacts and generated release
+  matrices and notes from the platform manifest.
+- Extracted the App Server environment-registration state machine, shared SSH
+  batch policy, and platform-specific shim agent process inspection.
+- Updated compatibility documentation to describe version-qualified checks and
+  Linux/macOS remote session imports.
+
 ## 0.3.1 - 2026-08-29
 
 - Added Intel macOS as a supported remote server using OpenAI's official
