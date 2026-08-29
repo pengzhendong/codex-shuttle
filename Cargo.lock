@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-bridge"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-install"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "cxs-core",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-mux"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-probe"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-sessions"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "cxs-ssh",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-shim"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "cxs-bridge",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "cxs-ssh"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "cxs-core",

@@ -2,7 +2,7 @@
 
 All notable changes to Codex Shuttle are documented here. The project follows semantic versioning once a stable public API exists.
 
-## Unreleased
+## 0.3.2 - 2026-08-29
 
 - Centralized native runner, Rust target, remote architecture, CLI asset, and
   shim asset metadata in `runtime/platforms.json` for the installer and CI.
