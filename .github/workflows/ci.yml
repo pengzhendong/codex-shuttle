@@ -61,7 +61,7 @@ jobs:
           add-job-id-key: false
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y openssh-server
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/codex-shuttle-package
           key: codex-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/codex-versions.txt') }}
