@@ -197,7 +197,7 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: taiki-e/install-action@v2.85.11
+      - uses: taiki-e/install-action@v2.87.1
         if: matrix.builder == 'zig'
         with:
           tool: cargo-zigbuild@0.23.0
