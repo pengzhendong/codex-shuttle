@@ -3,9 +3,8 @@
 set -eu
 
 REPOSITORY="pengzhendong/codex-shuttle"
-SHUTTLE_VERSION="0.2.0"
 INSTALL_DIR=${CXS_INSTALL_DIR:-"$HOME/.local/bin"}
-BUNDLED_CODEX="/Applications/ChatGPT.app/Contents/Resources/codex"
+BUNDLED_CODEX=${CXS_CODEX_PATH:-"/Applications/ChatGPT.app/Contents/Resources/codex"}
 
 usage() {
   cat <<'EOF'
@@ -20,6 +19,7 @@ Options:
 
 Environment:
   CXS_INSTALL_DIR  Same as --install-dir
+  CXS_CODEX_PATH   Override the bundled Codex binary path
 EOF
 }
 
@@ -76,13 +76,24 @@ test -x "$BUNDLED_CODEX" ||
 codex_version=$("$BUNDLED_CODEX" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
 test -n "$codex_version" ||
   fail "could not detect the bundled ChatGPT Desktop Codex version"
-release_tag="v${SHUTTLE_VERSION}-codex.${codex_version}"
 printf 'Detected bundled ChatGPT Desktop Codex %s.\n' "$codex_version"
-
-release_url="https://github.com/${REPOSITORY}/releases/download/${release_tag}"
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/cxs-install.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+
+releases_url="https://github.com/${REPOSITORY}/releases.atom"
+download "$releases_url" "$work_dir/releases.atom" ||
+  fail "could not query releases from $REPOSITORY"
+release_tag=$(grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+-codex\.[0-9]+\.[0-9]+\.[0-9]+' "$work_dir/releases.atom" |
+  awk -v suffix="-codex.$codex_version" '
+    /^v[0-9]+\.[0-9]+\.[0-9]+-codex\.[0-9]+\.[0-9]+\.[0-9]+$/ &&
+      substr($0, length($0) - length(suffix) + 1) == suffix { print; exit }
+  ')
+test -n "$release_tag" ||
+  fail "no Shuttle release matches bundled Codex $codex_version"
+printf 'Selected Shuttle release %s.\n' "$release_tag"
+
+release_url="https://github.com/${REPOSITORY}/releases/download/${release_tag}"
 
 printf 'Downloading %s...\n' "$asset"
 if ! download "$release_url/$asset" "$work_dir/$asset"; then

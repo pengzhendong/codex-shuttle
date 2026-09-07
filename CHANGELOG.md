@@ -2,6 +2,11 @@
 
 All notable changes to Codex Shuttle are documented here. The project follows semantic versioning once a stable public API exists.
 
+## Unreleased
+
+- Updated both installers to discover the newest Shuttle release compatible
+  with the bundled Codex version instead of relying on a duplicated version.
+
 ## 0.3.2 - 2026-08-29
 
 - Centralized native runner, Rust target, remote architecture, CLI asset, and
