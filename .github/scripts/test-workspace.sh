@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+bash .github/scripts/test-install.sh
+if command -v pwsh >/dev/null 2>&1; then
+  pwsh -NoProfile -File .github/scripts/test-install.ps1
+fi
+
 mkdir -p target
 log=target/cxs-ci-test.log
 set +e
