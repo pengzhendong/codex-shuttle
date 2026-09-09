@@ -39,6 +39,9 @@ const MAX_HANDSHAKE_BYTES: usize = 8 * 1024;
 const MAX_JSON_LINE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PENDING_CLIENT_BYTES: usize = 32 * 1024 * 1024;
 const CHILD_EXIT_GRACE: Duration = Duration::from_secs(2);
+const AGENT_RECONNECT_INITIAL_DELAY: Duration = Duration::from_millis(250);
+const AGENT_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5);
+const AGENT_STABLE_WINDOW: Duration = Duration::from_secs(30);
 const PROJECT_METADATA_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_INSTRUCTION_SOURCES: usize = 32;
 const MAX_INSTRUCTION_SOURCE_BYTES: usize = 256 * 1024;
@@ -164,11 +167,56 @@ struct PendingThreadMetadata {
 
 pub async fn serve(profile: Profile, store: ProfileStore, codex: PathBuf) -> Result<()> {
     let expected_token = store.read_token(&profile)?;
-    let (mux, mut agent) = start_agent(&profile, &expected_token).await?;
-    let agent_pid = agent.id();
-    let result = serve_multiplexed(profile, store, codex, mux).await;
-    stop_child(&mut agent, agent_pid).await;
-    result
+    let mut consecutive_failures = 0_u32;
+
+    loop {
+        let connected_at = tokio::time::Instant::now();
+        match start_agent(&profile, &expected_token).await {
+            Ok((mux, mut agent)) => {
+                let agent_pid = agent.id();
+                info!(profile = %profile.name, ?agent_pid, "remote Shuttle agent connected");
+                let result =
+                    serve_multiplexed(profile.clone(), store.clone(), codex.clone(), mux).await;
+                stop_child(&mut agent, agent_pid).await;
+                let Err(error) = result else {
+                    return Ok(());
+                };
+                if connected_at.elapsed() >= AGENT_STABLE_WINDOW {
+                    consecutive_failures = 0;
+                }
+                warn!(
+                    profile = %profile.name,
+                    error = %error,
+                    "bridge transport stopped; reconnecting"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    profile = %profile.name,
+                    error = %error,
+                    "could not connect the remote Shuttle agent; retrying"
+                );
+            }
+        }
+
+        consecutive_failures = consecutive_failures.saturating_add(1);
+        let delay = agent_reconnect_delay(consecutive_failures);
+        info!(
+            profile = %profile.name,
+            attempt = consecutive_failures,
+            delay_ms = delay.as_millis(),
+            "waiting before bridge reconnect"
+        );
+        tokio::time::sleep(delay).await;
+    }
+}
+
+fn agent_reconnect_delay(consecutive_failures: u32) -> Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(8);
+    let multiplier = 1_u32 << exponent;
+    AGENT_RECONNECT_INITIAL_DELAY
+        .saturating_mul(multiplier)
+        .min(AGENT_RECONNECT_MAX_DELAY)
 }
 
 async fn start_agent(profile: &Profile, expected_token: &str) -> Result<(MuxSession, Child)> {
@@ -1537,6 +1585,15 @@ mod tests {
             executor_source: None,
             executor_path: None,
         }
+    }
+
+    #[test]
+    fn agent_reconnect_delay_backs_off_and_caps() {
+        assert_eq!(agent_reconnect_delay(1), Duration::from_millis(250));
+        assert_eq!(agent_reconnect_delay(2), Duration::from_millis(500));
+        assert_eq!(agent_reconnect_delay(3), Duration::from_secs(1));
+        assert_eq!(agent_reconnect_delay(6), Duration::from_secs(5));
+        assert_eq!(agent_reconnect_delay(u32::MAX), Duration::from_secs(5));
     }
 
     #[test]
