@@ -313,6 +313,8 @@ fn list(store: &ProfileStore) -> Result<()> {
 
 fn status(store: &ProfileStore, name: &str) -> Result<()> {
     let profile = store.load(name)?;
+    let bridge_is_running = bridge_running(store, name)?;
+    let bridge_is_ready = bridge_is_running && local_endpoint_ready(&profile.local_socket);
     println!("Profile:       {}", profile.name);
     println!("Status:        {}", profile.status);
     println!("Source host:   {}", profile.source_host);
@@ -327,8 +329,10 @@ fn status(store: &ProfileStore, name: &str) -> Result<()> {
     );
     println!(
         "Bridge:        {}",
-        if bridge_running(store, name)? {
+        if bridge_is_ready {
             "running"
+        } else if bridge_is_running {
+            "reconnecting"
         } else {
             "stopped"
         }
@@ -345,7 +349,7 @@ fn status(store: &ProfileStore, name: &str) -> Result<()> {
     if let Some(path) = &profile.executor_path {
         println!("Executor path: {path}");
     }
-    if profile.status == ProfileStatus::Ready {
+    if profile.status == ProfileStatus::Ready && bridge_is_ready {
         println!("Usable in App: yes");
     } else {
         println!("Usable in App: no");
@@ -414,10 +418,15 @@ async fn doctor(
             ))
         },
     ));
+    let bridge_is_running = bridge_running(store, name)?;
     checks.push(DoctorCheck::from_result(
         "local-bridge",
-        if bridge_running(store, name)? {
+        if bridge_is_running && local_endpoint_ready(&profile.local_socket) {
             Ok("background bridge is running".to_owned())
+        } else if bridge_is_running {
+            Err(anyhow::anyhow!(
+                "bridge is reconnecting to the remote host; retry shortly"
+            ))
         } else {
             Err(anyhow::anyhow!("bridge is stopped; run 'cxs up {name}'"))
         },
@@ -734,7 +743,11 @@ fn up(store: &ProfileStore, name: &str, codex: &Path) -> Result<()> {
         );
     }
     if bridge_running(store, name)? {
-        println!("Bridge for '{name}' is already running.");
+        if local_endpoint_ready(&profile.local_socket) {
+            println!("Bridge for '{name}' is already running.");
+        } else {
+            println!("Bridge for '{name}' is already running and reconnecting.");
+        }
         return Ok(());
     }
     clear_stale_runtime(store, &profile)?;
@@ -764,17 +777,21 @@ fn up(store: &ProfileStore, name: &str, codex: &Path) -> Result<()> {
     write_pid_file(&store.paths().bridge_pid(name), pid)?;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if profile.local_socket.exists() && pid_alive(pid) {
+        if local_endpoint_ready(&profile.local_socket) && pid_alive(pid) {
             println!("Started bridge for '{name}' (pid {pid}).");
             return Ok(());
         }
+        if !pid_alive(pid) {
+            let _ = stop_bridge(store, name, true);
+            bail!(
+                "bridge exited before becoming ready; inspect {}",
+                log_path.display()
+            );
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let _ = stop_bridge(store, name, true);
-    bail!(
-        "bridge did not become ready; inspect {}",
-        log_path.display()
-    )
+    println!("Started bridge for '{name}' (pid {pid}); remote connection is still reconnecting.");
+    Ok(())
 }
 
 fn down(store: &ProfileStore, name: &str) -> Result<()> {
@@ -857,6 +874,16 @@ fn remove_socket_if_socket(path: &Path) -> Result<()> {
     }
     fs::remove_file(path)?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn local_endpoint_ready(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+}
+
+#[cfg(windows)]
+fn local_endpoint_ready(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
 fn write_pid_file(path: &Path, pid: u32) -> Result<()> {

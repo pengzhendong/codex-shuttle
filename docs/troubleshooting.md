@@ -71,6 +71,14 @@ upgrade, update the remote shim as well. Current releases use a versioned App
 control socket so a stale process from an older release cannot receive the new
 WebSocket proxy connection.
 
+## The Codex app is reconnecting after a network interruption
+
+The bridge keeps running and automatically rebuilds its SSH/Yamux transport. During recovery,
+`cxs status <profile>` reports `Bridge: reconnecting` and `Usable in App: no`; once the local
+endpoint is restored it reports `Bridge: running` and the App can reconnect. If it remains in the
+reconnecting state, inspect the bridge log and verify the original SSH host with
+`ssh -o BatchMode=yes <ssh-host> true`.
+
 ## An update broke the remote executor
 
 Switch to the previous verified remote release:
