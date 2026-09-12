@@ -4,6 +4,9 @@ All notable changes to Codex Shuttle are documented here. The project follows se
 
 ## Unreleased
 
+- Restore managed SSH aliases and their Include on `cxs up`, including when the
+  bridge is already running, and preserve SSH failure diagnostics in errors.
+
 - Updated both installers to discover the newest Shuttle release compatible
   with the bundled Codex version instead of relying on a duplicated version.
 

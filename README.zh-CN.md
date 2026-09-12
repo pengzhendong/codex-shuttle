@@ -103,7 +103,7 @@ cxs install devbox --local-download
 | `cxs add <ssh-host> [--name <profile>]` | 根据 `ssh -G` 创建或刷新配置 |
 | `cxs install <profile>` | 安装匹配的官方 Codex 和 Shuttle shim |
 | `cxs update <profile>` | 按当前本地 Codex 更新远程组件 |
-| `cxs up <profile>` / `cxs down <profile>` | 启动或停止本地桥接器 |
+| `cxs up <profile>` / `cxs down <profile>` | 恢复托管 SSH 配置并启动，或停止本地桥接器 |
 | `cxs doctor <profile> [--json]` | 检查 Codex、SSH、远程文件与远程命令执行；可输出 JSON |
 | `cxs list` / `cxs status <profile>` | 查看配置和状态 |
 | `cxs config <profile>` | 输出生成的 SSH Host 配置 |

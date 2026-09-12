@@ -742,6 +742,9 @@ fn up(store: &ProfileStore, name: &str, codex: &Path) -> Result<()> {
             profile.codex_version
         );
     }
+    // Restore managed aliases and the Include even when the bridge is already alive.
+    rewrite_all_ssh_config(store)?;
+    ensure_managed_include(store.paths())?;
     if bridge_running(store, name)? {
         if local_endpoint_ready(&profile.local_socket) {
             println!("Bridge for '{name}' is already running.");
@@ -1339,6 +1342,96 @@ fn rewrite_all_ssh_config(store: &ProfileStore) -> Result<()> {
         entries.push((profile, snapshot));
     }
     rewrite_managed_config(&store.paths().managed_ssh_config, &entries)
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod ssh_recovery_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct ChildGuard(std::process::Child);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn up_repairs_config_before_start_or_already_running_return() -> Result<()> {
+        for running in [false, true] {
+            for missing_include in [false, true] {
+                let directory = tempfile::tempdir()?;
+                let root = directory.path();
+                let store = ProfileStore::new(AppPaths {
+                    state_root: root.join("state"),
+                    ssh_config: root.join("ssh/config"),
+                    managed_ssh_config: root.join("ssh/codex-shuttle.conf"),
+                    default_codex_home: root.join("codex-home"),
+                });
+                let mut profile = store.create_prepared("repair", "source", "codex-cli test")?;
+                profile.status = ProfileStatus::Ready;
+                store.save(&profile)?;
+                SshSnapshot {
+                    source_host: "source".into(),
+                    values: BTreeMap::from([
+                        ("hostname".into(), vec!["example.invalid".into()]),
+                        ("user".into(), vec!["dev".into()]),
+                        ("port".into(), vec!["22".into()]),
+                    ]),
+                    inherited_values: BTreeMap::new(),
+                }
+                .save(&store.paths().profile_dir("repair"))?;
+                fs::create_dir_all(root.join("ssh"))?;
+                let original = "Host personal\n  HostName personal.invalid\n";
+                fs::write(&store.paths().ssh_config, original)?;
+                if missing_include {
+                    rewrite_all_ssh_config(&store)?;
+                } else {
+                    ensure_managed_include(store.paths())?;
+                }
+                let codex = root.join("codex");
+                fs::write(&codex, "#!/bin/sh\nprintf 'codex-cli test\\n'\n")?;
+                fs::set_permissions(&codex, fs::Permissions::from_mode(0o700))?;
+                let _bridge = if running {
+                    // A local process with the bridge command identity; no SSH or remote writes.
+                    let child = Command::new("sh")
+                        .args(["-c", "read line", "cxs bridge repair"])
+                        .stdin(Stdio::piped())
+                        .spawn()?;
+                    let guard = ChildGuard(child);
+                    write_pid_file(&store.paths().bridge_pid("repair"), guard.0.id())?;
+                    assert!(bridge_running(&store, "repair")?);
+                    Some(guard)
+                } else {
+                    // Stop before spawning a real bridge, after configuration recovery.
+                    fs::write(&profile.local_socket, "not a socket")?;
+                    None
+                };
+                for _ in 0..2 {
+                    let result = up(&store, "repair", &codex);
+                    if running {
+                        result?;
+                    } else {
+                        assert!(result.unwrap_err().to_string().contains("non-socket"));
+                    }
+                    let config = fs::read_to_string(&store.paths().ssh_config)?;
+                    assert!(config.ends_with(original));
+                    assert_eq!(
+                        config.matches("Include ~/.ssh/codex-shuttle.conf").count(),
+                        1
+                    );
+                    let managed = fs::read_to_string(&store.paths().managed_ssh_config)?;
+                    assert!(managed.contains("Host cxs-repair"));
+                    assert!(managed.contains("example.invalid"));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -56,6 +56,15 @@ cxs sync <profile>
 
 ## The bridge stopped after SSH config changed
 
+If only `~/.ssh/codex-shuttle.conf` or its Include in `~/.ssh/config` was removed,
+run `cxs up <profile>`. It restores the managed aliases from saved snapshots and
+the Include, even if the bridge is already running. Other SSH entries are preserved.
+This does not refresh changed source-host options; use the steps below for that.
+
+Failed non-interactive connection checks include SSH's stderr in the returned
+error, so desktop callers can display the authentication, host-key, or network
+failure instead of only a generic failure message. Host-key policy is unchanged.
+
 Verify the original alias, refresh the profile snapshot, and restart the bridge:
 
 ```bash
