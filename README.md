@@ -103,7 +103,7 @@ cxs install devbox --local-download
 | `cxs add <ssh-host> [--name <profile>]` | Create or refresh a profile from `ssh -G` |
 | `cxs install <profile>` | Install matching official Codex and the Shuttle shim |
 | `cxs update <profile>` | Update artifacts for the current local Codex |
-| `cxs up <profile>` / `cxs down <profile>` | Start or stop the local bridge |
+| `cxs up <profile>` / `cxs down <profile>` | Restore managed SSH config and start, or stop, the local bridge |
 | `cxs doctor <profile> [--json]` | Verify Codex, SSH, remote filesystem, and remote command execution |
 | `cxs list` / `cxs status <profile>` | Inspect configured profiles |
 | `cxs config <profile>` | Print the generated SSH host block |

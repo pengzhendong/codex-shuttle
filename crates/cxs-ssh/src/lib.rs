@@ -83,11 +83,20 @@ impl SshSnapshot {
 }
 
 pub fn test_connection(source_host: &str) -> Result<()> {
-    let status = batch_command(source_host)?
+    run_connection_test(source_host, batch_command(source_host)?)
+}
+
+fn run_connection_test(source_host: &str, mut command: Command) -> Result<()> {
+    let output = command
         .arg("true")
-        .status()
+        .output()
         .with_context(|| format!("could not run ssh for host '{source_host}'"))?;
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if !detail.is_empty() {
+            bail!("non-interactive SSH test failed for '{source_host}': {detail}");
+        }
         bail!("non-interactive SSH test failed for '{source_host}'");
     }
     Ok(())
@@ -446,6 +455,39 @@ mod tests {
     use cxs_core::{PROFILE_SCHEMA_VERSION, ProfileStatus};
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn connection_errors_preserve_ssh_stderr() -> Result<()> {
+        for (script, expected) in [
+            (
+                "printf 'Permission denied (publickey).\\n' >&2; exit 255",
+                Some("Permission denied (publickey)."),
+            ),
+            (
+                "printf 'Host key verification failed.\\n' >&2; exit 255",
+                Some("Host key verification failed."),
+            ),
+            ("exit 255", Some("")),
+            ("printf 'warning\\n' >&2; exit 0", None),
+        ] {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]);
+            let result = run_connection_test("source", command);
+            if let Some(detail) = expected {
+                let base = "non-interactive SSH test failed for 'source'";
+                let expected = if detail.is_empty() {
+                    base.to_owned()
+                } else {
+                    format!("{base}: {detail}")
+                };
+                assert_eq!(result.unwrap_err().to_string(), expected);
+            } else {
+                result?;
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn builds_one_validated_batch_ssh_policy() -> Result<()> {
