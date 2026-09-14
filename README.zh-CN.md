@@ -90,7 +90,9 @@ cxs doctor devbox
 
 Shuttle 会生成给 App 使用的 SSH 别名 `cxs-devbox`。在 Codex 桌面 App 中选择该主机，再打开 `/home/me/project` 或 `/Users/me/project` 这样的远程路径。
 
-默认由服务器下载匹配的官方 Codex 包。如果希望先在桌面端下载再通过 SSH 上传：
+默认先由服务器下载匹配的官方 Codex 包；如果服务器无法访问 Release，Shuttle 会自动改由
+桌面端下载并校验同一份包，再通过 SSH 上传。如果希望强制走桌面端（例如提前规避服务器网络
+检查）：
 
 ```bash
 cxs install devbox --local-download

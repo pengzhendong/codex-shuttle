@@ -35,8 +35,9 @@ stage of the release process.
    `rust-v<version>/codex-package-<target>.tar.gz` and
    `codex-package_SHA256SUMS` assets.
 3. By default the SSH host downloads and verifies the official package while
-   the desktop uploads the small Shuttle shim. With `--local-download`, the
-   desktop downloads and verifies Codex first, then uploads it over SSH.
+   the desktop uploads the small Shuttle shim. If the remote download fails,
+   the desktop automatically downloads and verifies the same Codex package and
+   uploads it over SSH. `--local-download` forces that desktop path immediately.
 4. The installer extracts to a private staging directory and checks the
    official Codex binary, code-mode host, ripgrep, Linux bubblewrap when applicable, exact version,
    and `exec-server` entry point before atomically switching `current`. It also

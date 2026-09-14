@@ -90,7 +90,10 @@ cxs doctor devbox
 
 Shuttle creates the app-facing SSH alias `cxs-devbox`. In the Codex desktop app, choose that host and open a remote path such as `/home/me/project` or `/Users/me/project`.
 
-The server downloads the matching official Codex package by default. To download it on the desktop and upload it over SSH instead:
+The server tries to download the matching official Codex package first. If the
+remote host cannot reach the release, Shuttle automatically downloads the same
+verified package on the desktop and uploads it over SSH. To force the desktop
+path (for example, before a remote network check):
 
 ```bash
 cxs install devbox --local-download

@@ -32,11 +32,16 @@ Choose the generated host alias, normally `cxs-<profile>`, and open a remote pat
 
 ## No matching official Codex release
 
-The installed `cxs` binary is bound to one Codex source version. Confirm the local Codex source baseline and select the matching Shuttle Release. If the server cannot reach GitHub, use desktop-side download:
+The installed `cxs` binary is bound to one Codex source version. Confirm the local Codex source baseline and select the matching Shuttle Release. If the server cannot reach GitHub, `cxs install` automatically falls back to a desktop-side download:
 
 ```bash
 cxs install <profile> --local-download
 ```
+
+Without the flag, `cxs install` tries the server download first and
+automatically retries through the desktop when the remote download fails. The
+flag is useful when the server is known to have restricted egress or when you
+want to avoid the first failed attempt.
 
 ## A session is missing after changing Provider
 

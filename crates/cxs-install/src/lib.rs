@@ -232,19 +232,16 @@ pub fn install(
         &codex_tag,
         "codex-package_SHA256SUMS",
     );
-    let package_source = if options.local_download {
-        PackageSource::LocalDownload {
-            package_url,
-            manifest_url,
-            package_name,
-            path: temporary.path().join("runtime.tar.gz"),
-        }
-    } else {
-        PackageSource::RemoteDownload {
-            package_url,
-            manifest_url,
-            package_name,
-        }
+    let local_package_source = PackageSource::LocalDownload {
+        package_url: package_url.clone(),
+        manifest_url: manifest_url.clone(),
+        package_name: package_name.clone(),
+        path: temporary.path().join("runtime.tar.gz"),
+    };
+    let remote_package_source = PackageSource::RemoteDownload {
+        package_url,
+        manifest_url,
+        package_name,
     };
 
     let shim_name = platform
@@ -264,7 +261,18 @@ pub fn install(
 
     let remote_shim = format!("/tmp/cxs-{}-shim", profile.name);
     let (package_result, shim_result) = transfer_install_artifacts(
-        || transfer_package(&package_source, &profile.source_host, &remote_package),
+        || {
+            if options.local_download {
+                transfer_package(&local_package_source, &profile.source_host, &remote_package)
+            } else {
+                transfer_package_with_fallback(
+                    &remote_package_source,
+                    &local_package_source,
+                    &profile.source_host,
+                    &remote_package,
+                )
+            }
+        },
         || upload(&profile.source_host, &shim, &remote_shim),
     );
     let transferred = match (package_result, shim_result) {
@@ -411,6 +419,38 @@ fn transfer_package(
             destination,
         )
         .map(|sha256| PackageTransfer { sha256 }),
+    }
+}
+
+fn transfer_package_with_fallback(
+    remote_source: &PackageSource,
+    local_source: &PackageSource,
+    host: &str,
+    destination: &str,
+) -> Result<PackageTransfer> {
+    transfer_with_fallback(
+        || transfer_package(remote_source, host, destination),
+        || transfer_package(local_source, host, destination),
+    )
+}
+
+fn transfer_with_fallback<Remote, Local>(remote: Remote, local: Local) -> Result<PackageTransfer>
+where
+    Remote: FnOnce() -> Result<PackageTransfer>,
+    Local: FnOnce() -> Result<PackageTransfer>,
+{
+    match remote() {
+        Ok(transfer) => Ok(transfer),
+        Err(remote_error) => {
+            eprintln!(
+                "remote Codex download failed; downloading on the desktop and uploading over SSH: {remote_error:#}"
+            );
+            local().map_err(|local_error| {
+                anyhow::anyhow!(
+                    "remote Codex download failed: {remote_error:#}; desktop download/upload fallback also failed: {local_error:#}"
+                )
+            })
+        }
     }
 }
 
@@ -1097,6 +1137,44 @@ mod tests {
         let package = package.unwrap();
         assert_eq!(package.sha256, "a".repeat(64));
         shim.unwrap();
+    }
+
+    #[test]
+    fn falls_back_to_desktop_transfer_after_remote_failure() {
+        let mut local_called = false;
+        let transfer = transfer_with_fallback(
+            || Err(anyhow::anyhow!("HTTP 403")),
+            || {
+                local_called = true;
+                Ok(PackageTransfer {
+                    sha256: "a".repeat(64),
+                })
+            },
+        )
+        .unwrap();
+        assert!(local_called);
+        assert_eq!(transfer.sha256, "a".repeat(64));
+    }
+
+    #[test]
+    fn keeps_remote_transfer_when_it_succeeds() {
+        let mut local_called = false;
+        let transfer = transfer_with_fallback(
+            || {
+                Ok(PackageTransfer {
+                    sha256: "a".repeat(64),
+                })
+            },
+            || {
+                local_called = true;
+                Ok(PackageTransfer {
+                    sha256: "b".repeat(64),
+                })
+            },
+        )
+        .unwrap();
+        assert!(!local_called);
+        assert_eq!(transfer.sha256, "a".repeat(64));
     }
 
     #[test]
