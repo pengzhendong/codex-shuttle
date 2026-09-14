@@ -35,10 +35,11 @@ workflow.
 ## Executor selection
 
 The installer always selects OpenAI's official source-version and
-architecture-matched `codex-package-<target>.tar.gz`. The SSH host downloads it
-by default; `--local-download` moves that download to the desktop and uploads the
-same verified archive. There is no custom runtime, existing-binary fallback,
-or system-wide Codex dependency.
+architecture-matched `codex-package-<target>.tar.gz`. The SSH host tries to
+download it first; if that transfer fails, the desktop downloads and verifies
+the same archive before uploading it over SSH. `--local-download` forces the
+desktop path without waiting for a remote failure. There is no custom runtime,
+existing-binary fallback, or system-wide Codex dependency.
 
 The public source baseline is used for desktop prereleases (for example,
 `0.147.0-alpha.6.5` selects official `0.147.0`). The official package and
