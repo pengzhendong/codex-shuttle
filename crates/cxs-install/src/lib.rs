@@ -402,9 +402,18 @@ fn transfer_package(
             let manifest = path.with_extension("SHA256SUMS");
             download(manifest_url, &manifest)?;
             let sha256 = checksum_from_file(&manifest, package_name)?;
-            download(package_url, path)?;
+            download_with_progress(
+                package_url,
+                path,
+                Some("Downloading the official Codex package on the desktop"),
+            )?;
             verify_sha256(path, &sha256)?;
-            upload(host, path, destination)?;
+            upload_with_progress(
+                host,
+                path,
+                destination,
+                Some("Uploading the official Codex package over SSH"),
+            )?;
             Ok(PackageTransfer { sha256 })
         }
         PackageSource::RemoteDownload {
@@ -469,6 +478,7 @@ temporary="$destination.partial"
 manifest="$destination.SHA256SUMS"
 trap 'unlink "$manifest" 2>/dev/null || true' EXIT HUP INT TERM
 {sha256_function}
+echo '==> Downloading the official Codex package on the remote host' >&2
 curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --silent --show-error --output "$manifest" {manifest_url}
 expected=$(awk -v wanted={package_name} '$2 == wanted || $2 == "*" wanted {{ print $1; exit }}' "$manifest")
 test -n "$expected" || {{ echo "official checksum manifest did not contain the package" >&2; exit 1; }}
@@ -477,7 +487,7 @@ if test -f "$destination"; then
   if test "$actual" = "$expected"; then printf '%s\n' "$expected"; exit 0; fi
   unlink "$destination"
 fi
-curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --silent --show-error --continue-at - --output "$temporary" {url}
+curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --progress-bar --continue-at - --output "$temporary" {url} >&2
 actual=$(sha256_file "$temporary")
 test "$actual" = "$expected" || {{ unlink "$temporary"; echo "official Codex package checksum mismatch" >&2; exit 1; }}
 mv "$temporary" "$destination"
@@ -666,8 +676,33 @@ fn download_shim(
     Ok(shim)
 }
 
+fn print_progress(label: &str, transferred: u64, total: Option<u64>, last_width: &mut usize) {
+    let line = match total.filter(|total| *total > 0) {
+        Some(total) => {
+            let percent = ((transferred.saturating_mul(100)) / total).min(100);
+            format!("==> {label} [{percent:3}%]")
+        }
+        None => format!("==> {label} [{transferred} bytes]"),
+    };
+    let padding = last_width.saturating_sub(line.len());
+    eprint!("\r{line}{}", " ".repeat(padding));
+    let _ = std::io::stderr().flush();
+    *last_width = line.len();
+}
+
+fn finish_progress(last_width: &mut usize) {
+    if *last_width > 0 {
+        eprintln!();
+        *last_width = 0;
+    }
+}
+
 fn download(url: &str, destination: &Path) -> Result<()> {
-    let status = Command::new("curl")
+    download_with_progress(url, destination, None)
+}
+
+fn download_with_progress(url: &str, destination: &Path, label: Option<&str>) -> Result<()> {
+    let mut child = Command::new("curl")
         .args([
             "--fail",
             "--location",
@@ -675,30 +710,147 @@ fn download(url: &str, destination: &Path) -> Result<()> {
             "3",
             "--silent",
             "--show-error",
+            "--include",
+            "--output",
+            "-",
         ])
-        .arg("--output")
-        .arg(destination)
         .arg(url)
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| "could not run curl; install curl or provide local artifacts")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .with_context(|| "could not read curl output")?;
+    let mut output = File::create(destination)
+        .with_context(|| format!("could not create {}", destination.display()))?;
+    let mut pending = Vec::new();
+    let mut chunk = vec![0_u8; 64 * 1024];
+    let mut body_started = false;
+    let mut total = None;
+    let mut transferred = 0_u64;
+    let mut last_width = 0_usize;
+    if let Some(label) = label {
+        eprintln!("==> {label}");
+    }
+    loop {
+        let read = stdout
+            .read(&mut chunk)
+            .with_context(|| "could not read curl output")?;
+        if read == 0 {
+            break;
+        }
+        let mut offset = 0_usize;
+        while offset < read {
+            if !body_started {
+                pending.push(chunk[offset]);
+                offset += 1;
+                if pending.ends_with(b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&pending);
+                    if headers.starts_with("HTTP/") {
+                        total = headers.lines().rev().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<u64>().ok())
+                                .flatten()
+                        });
+                        pending.clear();
+                        body_started = true;
+                        if let Some(label) = label {
+                            print_progress(label, 0, total, &mut last_width);
+                        }
+                    }
+                }
+                continue;
+            }
+            let remaining = read - offset;
+            output
+                .write_all(&chunk[offset..read])
+                .with_context(|| format!("could not write {}", destination.display()))?;
+            transferred += remaining as u64;
+            offset = read;
+            if let Some(label) = label {
+                print_progress(label, transferred, total, &mut last_width);
+            }
+        }
+    }
+    output
+        .flush()
+        .with_context(|| format!("could not write {}", destination.display()))?;
+    let status = child
+        .wait()
         .with_context(|| "could not run curl; install curl or provide local artifacts")?;
     if !status.success() {
         bail!("download failed: {url}");
     }
+    if let Some(label) = label {
+        if let Some(total) = total {
+            print_progress(label, total, Some(total), &mut last_width);
+        }
+    }
+    finish_progress(&mut last_width);
     Ok(())
 }
 
 fn upload(host: &str, source: &Path, remote: &str) -> Result<()> {
-    let file = File::open(source)
+    upload_with_progress(host, source, remote, None)
+}
+
+fn upload_with_progress(
+    host: &str,
+    source: &Path,
+    remote: &str,
+    label: Option<&str>,
+) -> Result<()> {
+    let mut file = File::open(source)
         .with_context(|| format!("could not open upload source {}", source.display()))?;
+    let total = file.metadata().ok().map(|metadata| metadata.len());
     let command = format!("umask 077; cat > {}", shell_quote(remote));
-    let status = batch_command(host)?
+    let mut child = batch_command(host)?
         .arg(&command)
-        .stdin(Stdio::from(file))
-        .status()
+        .stdin(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("could not upload {} to {host}", source.display()))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .with_context(|| format!("could not upload {} to {host}", source.display()))?;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut transferred = 0_u64;
+    let mut last_width = 0_usize;
+    if let Some(label) = label {
+        eprintln!("==> {label}");
+        print_progress(label, 0, total, &mut last_width);
+    }
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("could not read upload source {}", source.display()))?;
+        if read == 0 {
+            break;
+        }
+        stdin
+            .write_all(&buffer[..read])
+            .with_context(|| format!("could not upload {} to {host}", source.display()))?;
+        transferred += read as u64;
+        if let Some(label) = label {
+            print_progress(label, transferred, total, &mut last_width);
+        }
+    }
+    drop(stdin);
+    let status = child
+        .wait()
         .with_context(|| format!("could not upload {} to {host}", source.display()))?;
     if !status.success() {
         bail!("upload to {host} failed");
     }
+    if let Some(label) = label {
+        if let Some(total) = total {
+            print_progress(label, total, Some(total), &mut last_width);
+        }
+    }
+    finish_progress(&mut last_width);
     Ok(())
 }
 
@@ -1114,6 +1266,17 @@ mod tests {
         fs::write(&path, format!("{}  artifact\n", "a".repeat(64)))?;
         assert_eq!(checksum_from_file(&path, "artifact")?, "a".repeat(64));
         Ok(())
+    }
+
+    #[test]
+    fn progress_messages_follow_homebrew_style() {
+        assert_eq!(
+            format!(
+                "==> {} [{:3}%]",
+                "Downloading the official Codex package on the desktop", 42
+            ),
+            "==> Downloading the official Codex package on the desktop [ 42%]"
+        );
     }
 
     #[test]
