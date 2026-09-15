@@ -606,7 +606,7 @@ async fn install(
         println!("Stopped the existing bridge before replacing remote artifacts.");
     }
     println!(
-        "Installing official {} for {} on '{}'...",
+        "==> Installing official {} for {} on '{}'",
         profile.codex_version, facts.arch, profile.source_host
     );
     let record = match cxs_install::install(&profile, &token, &facts, &options) {
