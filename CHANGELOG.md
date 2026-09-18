@@ -4,6 +4,10 @@ All notable changes to Codex Shuttle are documented here. The project follows se
 
 ## Unreleased
 
+- Scoped new Shuttle host sidebars to the locally persisted threads started
+  through that host, while retaining a shared desktop `CODEX_HOME` and native
+  archive state. Added `cxs session-scope <profile>` for existing profiles.
+
 - Fall back to a verified desktop-side Codex package download when the remote
   SSH host cannot reach the official release.
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::net::TcpListener;
@@ -15,6 +16,7 @@ use thiserror::Error;
 pub mod routing;
 
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+pub const SESSION_SCOPE_SCHEMA_VERSION: u32 = 1;
 #[cfg(unix)]
 pub const DESKTOP_CODEX_PATH: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 pub const SHIM_PROTOCOL_VERSION: u32 = 1;
@@ -117,6 +119,35 @@ pub struct Profile {
     pub executor_path: Option<String>,
 }
 
+/// Desktop-local ownership information for the sidebar of one Shuttle profile.
+///
+/// Rollouts and the Codex `SQLite` database remain in the shared local
+/// `CODEX_HOME`. This file only records which thread IDs the profile may expose
+/// through its App Server connection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionScope {
+    pub schema_version: u32,
+    pub enabled: bool,
+    #[serde(default)]
+    pub thread_ids: BTreeSet<String>,
+}
+
+impl SessionScope {
+    #[must_use]
+    pub fn enabled() -> Self {
+        Self {
+            schema_version: SESSION_SCOPE_SCHEMA_VERSION,
+            enabled: true,
+            thread_ids: BTreeSet::new(),
+        }
+    }
+
+    pub fn record_thread(&mut self, thread_id: &str) -> Result<bool> {
+        validate_thread_id(thread_id)?;
+        Ok(self.thread_ids.insert(thread_id.to_owned()))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShimHandshake {
     pub magic: String,
@@ -191,6 +222,11 @@ impl AppPaths {
     #[must_use]
     pub fn bridge_log(&self, name: &str) -> PathBuf {
         self.profile_dir(name).join("bridge.log")
+    }
+
+    #[must_use]
+    pub fn session_scope(&self, name: &str) -> PathBuf {
+        self.profile_dir(name).join("session-scope.json")
     }
 }
 
@@ -304,6 +340,10 @@ impl ProfileStore {
             executor_path: None,
         };
         self.save(&profile)?;
+        if let Err(error) = self.save_session_scope(name, &SessionScope::enabled()) {
+            let _ = self.remove(name);
+            return Err(error);
+        }
         Ok(profile)
     }
 
@@ -339,6 +379,60 @@ impl ProfileStore {
         {
             let mut writer = BufWriter::new(temporary.as_file_mut());
             serde_json::to_writer_pretty(&mut writer, profile)?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+        }
+        temporary.as_file_mut().sync_all()?;
+        temporary
+            .persist(&destination)
+            .map_err(|error| error.error)
+            .with_context(|| format!("could not replace {}", destination.display()))?;
+        Ok(())
+    }
+
+    /// Returns `None` for a profile created by a Shuttle version before
+    /// sidebar scoping existed. Such profiles retain their historical behavior
+    /// until the user explicitly enables a scope.
+    pub fn load_session_scope(&self, name: &str) -> Result<Option<SessionScope>> {
+        validate_profile_name(name)?;
+        let path = self.paths.session_scope(name);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = File::open(&path)
+            .with_context(|| format!("could not open session scope {}", path.display()))?;
+        let scope: SessionScope = serde_json::from_reader(BufReader::new(file))
+            .with_context(|| format!("could not parse session scope {}", path.display()))?;
+        if scope.schema_version != SESSION_SCOPE_SCHEMA_VERSION {
+            bail!(
+                "session scope for profile '{name}' uses unsupported schema version {}",
+                scope.schema_version
+            );
+        }
+        Ok(Some(scope))
+    }
+
+    pub fn save_session_scope(&self, name: &str, scope: &SessionScope) -> Result<()> {
+        validate_profile_name(name)?;
+        if scope.schema_version != SESSION_SCOPE_SCHEMA_VERSION {
+            bail!(
+                "session scope for profile '{name}' uses unsupported schema version {}",
+                scope.schema_version
+            );
+        }
+        for thread_id in &scope.thread_ids {
+            validate_thread_id(thread_id)?;
+        }
+        let directory = self.paths.profile_dir(name);
+        create_private_dir(&directory)?;
+        let destination = self.paths.session_scope(name);
+        let mut temporary = NamedTempFile::new_in(&directory).with_context(|| {
+            format!("could not create temporary file in {}", directory.display())
+        })?;
+        set_private_file_permissions(temporary.as_file())?;
+        {
+            let mut writer = BufWriter::new(temporary.as_file_mut());
+            serde_json::to_writer_pretty(&mut writer, scope)?;
             writer.write_all(b"\n")?;
             writer.flush()?;
         }
@@ -425,6 +519,16 @@ pub fn validate_host_alias(host: &str) -> Result<()> {
             .any(|byte| byte.is_ascii_whitespace() || byte == b'\0')
     {
         bail!("SSH host alias contains unsafe characters");
+    }
+    Ok(())
+}
+
+fn validate_thread_id(thread_id: &str) -> Result<()> {
+    if thread_id.is_empty() || thread_id.len() > 256 {
+        bail!("thread id must be 1-256 characters");
+    }
+    if thread_id.bytes().any(|byte| byte.is_ascii_control()) {
+        bail!("thread id contains control characters");
     }
     Ok(())
 }
@@ -540,9 +644,34 @@ mod tests {
         assert_eq!(created.status, ProfileStatus::Prepared);
         assert_eq!(store.read_token(&created)?.len(), 64);
         assert_eq!(store.load("gpu")?, created);
+        assert_eq!(
+            store.load_session_scope("gpu")?,
+            Some(SessionScope::enabled())
+        );
         assert_eq!(store.list()?.len(), 1);
         store.remove("gpu")?;
         assert!(store.list()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn session_scope_persists_owned_threads() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let store = ProfileStore::new(test_paths(temporary.path()));
+        store.create_prepared("gpu", "gpu-server", "codex-cli 0.147.0")?;
+        let mut scope = store
+            .load_session_scope("gpu")?
+            .context("new profiles must create a scoped sidebar")?;
+        assert!(scope.record_thread("thread-123")?);
+        assert!(!scope.record_thread("thread-123")?);
+        store.save_session_scope("gpu", &scope)?;
+        assert!(
+            store
+                .load_session_scope("gpu")?
+                .context("scope disappeared")?
+                .thread_ids
+                .contains("thread-123")
+        );
         Ok(())
     }
 

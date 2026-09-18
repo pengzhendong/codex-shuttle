@@ -112,6 +112,7 @@ cxs install devbox --local-download
 | `cxs rollback <profile>` | 回退到上一份远程 Release |
 | `cxs sync <profile>` | 导入服务器 session，且不覆盖本地 thread |
 | `cxs repair` | 备份并修复本地 Provider/session 元数据 |
+| `cxs session-scope <profile>` | 仅在该主机侧栏显示由它创建的 Shuttle thread |
 | `cxs remove <profile> [--remote]` | 删除本地状态，并可选删除远程 Shuttle 状态 |
 
 所有面向用户的选项都可通过 `cxs <command> --help` 查看。
@@ -135,6 +136,23 @@ cxs repair
 ```
 
 `repair` 会先备份受影响的 rollout 和 SQLite，再修复 Provider 与工作目录元数据。Rust 实现参考了 MIT 许可的 [`codex-provider-sync`](https://github.com/Dailin521/codex-provider-sync) 核心思路，版权说明保留在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 主机侧栏会话
+
+真实 session 数据始终保存在桌面端正常的 `~/.codex` 中；Shuttle 不复制、迁移或删除它们。
+新建的 Shuttle profile 还会保存一份很小的本地归属索引：当桌面端请求某个 Shuttle 主机的侧栏时，
+桥接器只返回通过该主机创建的 thread。这样普通本地 thread 不会混到 SSH 主机下，同时 Codex 原生的
+归档行为保持不变。
+
+旧版 Shuttle 创建的 profile 默认维持原有的未过滤行为；需要时可显式启用：
+
+```bash
+cxs session-scope devbox
+```
+
+如果 bridge 正在运行，这条命令会自动重启它。启用后该主机侧栏从空开始，只记录之后通过
+`cxs-devbox` 创建的 thread；不会改动既有本地历史。使用 `--disable` 可以恢复未过滤视图，
+但会保留已经记录的归属关系。
 
 ## 工作原理
 

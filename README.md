@@ -113,6 +113,7 @@ cxs install devbox --local-download
 | `cxs rollback <profile>` | Switch back to the previous remote release |
 | `cxs sync <profile>` | Import server-created sessions without overwriting local threads |
 | `cxs repair` | Back up and repair local Provider/session metadata |
+| `cxs session-scope <profile>` | Show only this host's Shuttle-created threads in its sidebar |
 | `cxs remove <profile> [--remote]` | Remove local state and optionally remote Shuttle state |
 
 Run `cxs <command> --help` for all user-facing options.
@@ -136,6 +137,27 @@ cxs repair
 ```
 
 `repair` backs up affected rollout files and SQLite state before reconciling Provider and working-directory metadata. The Rust implementation adapts the core repair approach from the MIT-licensed [`codex-provider-sync`](https://github.com/Dailin521/codex-provider-sync); attribution is retained in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Host sidebar history
+
+All real session data remains in the desktop's normal `~/.codex`; Shuttle never
+copies, moves, or deletes it. New Shuttle profiles additionally keep a small,
+local ownership index. When the desktop asks a Shuttle host for its sidebar,
+the bridge shows only threads started through that host. This prevents ordinary
+local threads from appearing under an SSH host while preserving the native
+archive behavior of Codex.
+
+Profiles created by older Shuttle releases retain their unfiltered behavior
+until you opt in:
+
+```bash
+cxs session-scope devbox
+```
+
+The command restarts that profile's bridge if necessary. It starts with an
+empty host sidebar and records future threads started through `cxs-devbox`.
+It does not alter prior local history. Use `--disable` to return to the old,
+unfiltered view without discarding the recorded ownership.
 
 ## How it works
 

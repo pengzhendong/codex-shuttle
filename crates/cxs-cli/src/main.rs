@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use cxs_core::{
-    AppPaths, OperationLockMode, Profile, ProfileStatus, ProfileStore, desktop_codex_path,
-    validate_profile_name,
+    AppPaths, OperationLockMode, Profile, ProfileStatus, ProfileStore, SessionScope,
+    desktop_codex_path, validate_profile_name,
 };
 use cxs_install::{InstallOptions, RemoteInstall};
 use cxs_probe::{codex_version, local_codex_checks};
@@ -116,6 +116,14 @@ enum Commands {
         #[arg(long)]
         provider: Option<String>,
     },
+    /// Limit a Shuttle host sidebar to its own locally stored threads.
+    #[command(alias = "scope")]
+    SessionScope {
+        profile: String,
+        /// Stop filtering this host's sidebar without deleting its recorded ownership.
+        #[arg(long)]
+        disable: bool,
+    },
     /// Run the local relay for a prepared profile.
     Bridge { profile: String },
     /// Remove local state and the generated SSH host block.
@@ -214,6 +222,10 @@ async fn main() -> Result<()> {
             provider.as_deref(),
         ),
         Commands::Repair { provider } => session_commands::repair(&store, provider.as_deref()),
+        Commands::SessionScope { profile, disable } => {
+            let _lock = store.lock_profile(&profile, OperationLockMode::Exclusive)?;
+            session_scope(&store, &profile, disable, desktop_codex_path())
+        }
         Commands::Bridge { profile } => {
             let profile = store.load(&profile)?;
             cxs_bridge::serve(profile, store, desktop_codex_path().to_path_buf()).await
@@ -320,6 +332,16 @@ fn status(store: &ProfileStore, name: &str) -> Result<()> {
     println!("Source host:   {}", profile.source_host);
     println!("App alias:     {}", profile.app_alias);
     println!("Codex version: {}", profile.codex_version);
+    match store.load_session_scope(name)? {
+        Some(scope) if scope.enabled => println!(
+            "Sidebar:       scoped ({} Shuttle thread(s))",
+            scope.thread_ids.len()
+        ),
+        Some(_) => println!("Sidebar:       unfiltered (scope disabled)"),
+        None => {
+            println!("Sidebar:       unfiltered (legacy profile; run 'cxs session-scope {name}')");
+        }
+    }
     println!("Local socket:  {}", profile.local_socket.display());
     println!("Transport:     SSH stdio mux via {}", profile.app_alias);
     println!("Environment:   {}", profile.environment_id);
@@ -549,6 +571,40 @@ fn config(store: &ProfileStore, name: &str) -> Result<()> {
     let profile = store.load(name)?;
     let snapshot = SshSnapshot::load(&store.paths().profile_dir(name))?;
     print!("{}", render_host(&profile, &snapshot)?);
+    Ok(())
+}
+
+fn session_scope(store: &ProfileStore, name: &str, disable: bool, codex: &Path) -> Result<()> {
+    store.load(name)?;
+    let restart_bridge = bridge_running(store, name)?;
+    if restart_bridge {
+        stop_bridge(store, name, true)?;
+    }
+
+    let mut scope = store
+        .load_session_scope(name)?
+        .unwrap_or_else(SessionScope::enabled);
+    scope.enabled = !disable;
+    store.save_session_scope(name, &scope)?;
+
+    if restart_bridge {
+        up(store, name, codex).context("updated session scope but could not restart the bridge")?;
+    }
+
+    if scope.enabled {
+        println!(
+            "Scoped '{}' to its own Shuttle threads ({} already recorded).",
+            name,
+            scope.thread_ids.len()
+        );
+        println!(
+            "Existing local sessions are unchanged; only future threads started through this host are added."
+        );
+    } else {
+        println!(
+            "Disabled sidebar filtering for '{name}'; recorded Shuttle thread ownership was preserved."
+        );
+    }
     Ok(())
 }
 
