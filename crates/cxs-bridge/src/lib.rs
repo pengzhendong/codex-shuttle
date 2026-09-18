@@ -1,9 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -11,7 +12,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use cxs_core::{
     AGENT_MAGIC, AGENT_PROTOCOL_VERSION, AgentHandshake, Profile, ProfileStore, SHIM_MAGIC,
-    SHIM_PROTOCOL_VERSION, ShimHandshake, ShimTransport, routing,
+    SHIM_PROTOCOL_VERSION, SessionScope, ShimHandshake, ShimTransport, routing,
 };
 use cxs_mux::{ChannelKind, MuxHandle, MuxSession};
 use cxs_ssh::batch_arguments;
@@ -52,6 +53,17 @@ enum RequestRoute {
     Local,
     Host,
     ThreadStart,
+}
+
+type SessionScopeHandle = Arc<Mutex<Option<SessionScope>>>;
+
+struct ConnectionContext {
+    profile: Profile,
+    expected_token: String,
+    codex: PathBuf,
+    store: ProfileStore,
+    session_scope: SessionScopeHandle,
+    mux: MuxHandle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +270,7 @@ pub async fn serve_multiplexed(
     codex: PathBuf,
     mut mux: MuxSession,
 ) -> Result<()> {
+    let session_scope = Arc::new(Mutex::new(store.load_session_scope(&profile.name)?));
     prepare_local_endpoint(&profile.local_socket)?;
     #[cfg(unix)]
     let listener = UnixListener::bind(&profile.local_socket)
@@ -288,15 +301,18 @@ pub async fn serve_multiplexed(
         tokio::select! {
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                let profile = profile.clone();
-                let token = expected_token.clone();
-                let codex = codex.clone();
-                let mux = mux.handle.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = handle_connection(stream, &profile, &token, &codex, mux).await {
-                        warn!(profile = %profile.name, error = %error, "bridge connection failed");
-                    }
-                });
+                spawn_app_connection(
+                    stream,
+                    ConnectionContext {
+                        profile: profile.clone(),
+                        expected_token: expected_token.clone(),
+                        codex: codex.clone(),
+                        store: store.clone(),
+                        session_scope: session_scope.clone(),
+                        mux: mux.handle.clone(),
+                    },
+                    "bridge connection failed",
+                );
             }
             accepted = exec_listener.accept() => {
                 let (mut socket, _) = accepted?;
@@ -321,15 +337,18 @@ pub async fn serve_multiplexed(
                     bail!("remote Shuttle agent opened an unsupported {:?} channel", incoming.kind);
                 }
                 let stream = incoming.stream;
-                let profile = profile.clone();
-                let token = expected_token.clone();
-                let codex = codex.clone();
-                let mux = mux.handle.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = handle_connection(stream, &profile, &token, &codex, mux).await {
-                        warn!(profile = %profile.name, error = %error, "multiplexed App channel failed");
-                    }
-                });
+                spawn_app_connection(
+                    stream,
+                    ConnectionContext {
+                        profile: profile.clone(),
+                        expected_token: expected_token.clone(),
+                        codex: codex.clone(),
+                        store: store.clone(),
+                        session_scope: session_scope.clone(),
+                        mux: mux.handle.clone(),
+                    },
+                    "multiplexed App channel failed",
+                );
             }
             result = &mut mux.task => {
                 return result.context("multiplexed session task failed")?;
@@ -348,11 +367,39 @@ pub async fn serve_multiplexed(
     }
 }
 
+fn spawn_app_connection<S>(stream: S, context: ConnectionContext, failure_message: &'static str)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(error) = handle_connection(
+            stream,
+            &context.profile,
+            &context.expected_token,
+            &context.codex,
+            &context.store,
+            context.session_scope,
+            context.mux,
+        )
+        .await
+        {
+            warn!(
+                profile = %context.profile.name,
+                error = %error,
+                failure = failure_message,
+                "App channel failed"
+            );
+        }
+    });
+}
+
 async fn handle_connection<S>(
     mut stream: S,
     profile: &Profile,
     expected_token: &str,
     codex: &Path,
+    store: &ProfileStore,
+    session_scope: SessionScopeHandle,
     mux: MuxHandle,
 ) -> Result<()>
 where
@@ -363,8 +410,16 @@ where
     let forwarded_arguments = app_server_arguments(&handshake.app_server_args)?;
 
     if handshake.transport == ShimTransport::WebSocket {
-        return handle_websocket_connection(stream, profile, codex, &forwarded_arguments, mux)
-            .await;
+        return handle_websocket_connection(
+            stream,
+            profile,
+            codex,
+            &forwarded_arguments,
+            store,
+            &session_scope,
+            mux,
+        )
+        .await;
     }
 
     let mut command = Command::new(codex);
@@ -407,6 +462,8 @@ where
         &mut child_stdout,
         &mut child_stdin,
         profile,
+        store,
+        &session_scope,
     )
     .await;
     let _ = child_stdin.shutdown().await;
@@ -423,6 +480,8 @@ async fn handle_websocket_connection<S>(
     profile: &Profile,
     codex: &Path,
     forwarded_arguments: &[String],
+    store: &ProfileStore,
+    session_scope: &SessionScopeHandle,
     mux: MuxHandle,
 ) -> Result<()>
 where
@@ -473,7 +532,7 @@ where
         .await
         .context("could not open the remote Host App Server channel")?;
 
-    let relay_result = relay_websocket(client, upstream, host, profile).await;
+    let relay_result = relay_websocket(client, upstream, host, profile, store, session_scope).await;
     stop_child(&mut child, pid).await;
     relay_result
 }
@@ -484,6 +543,8 @@ async fn handle_websocket_connection<S>(
     profile: &Profile,
     codex: &Path,
     forwarded_arguments: &[String],
+    store: &ProfileStore,
+    session_scope: &SessionScopeHandle,
     mux: MuxHandle,
 ) -> Result<()>
 where
@@ -529,7 +590,7 @@ where
         .await
         .context("could not open the remote Host App Server channel")?;
 
-    let relay_result = relay_websocket(client, upstream, host, profile).await;
+    let relay_result = relay_websocket(client, upstream, host, profile, store, session_scope).await;
     stop_child(&mut child, pid).await;
     relay_result
 }
@@ -582,6 +643,8 @@ async fn relay_websocket<C, U, H>(
     upstream: tokio_tungstenite::WebSocketStream<U>,
     host: H,
     profile: &Profile,
+    store: &ProfileStore,
+    session_scope: &SessionScopeHandle,
 ) -> Result<()>
 where
     C: AsyncRead + AsyncWrite + Unpin,
@@ -601,6 +664,7 @@ where
     let mut pending_client_bytes = 0_usize;
     let mut metadata_sequence = 0_u64;
     let mut pending_thread_metadata: HashMap<String, PendingThreadMetadata> = HashMap::new();
+    let mut pending_thread_list_requests = HashSet::new();
 
     loop {
         tokio::select! {
@@ -619,6 +683,9 @@ where
                         .and_then(Value::as_str);
                     let is_initialize = method == Some("initialize");
                     let route = request_route(method);
+                    if method == Some("thread/list") {
+                        remember_request_id(&value, &mut pending_thread_list_requests);
+                    }
                     let rewritten = String::from_utf8(rewritten)?;
                     if is_initialize {
                         let mut host_initialize = value;
@@ -702,6 +769,7 @@ where
                         let pending = pending_thread_metadata
                             .remove(&metadata_id)
                             .context("pending project metadata disappeared")?;
+                        record_owned_thread(store, profile, session_scope, &value);
                         let host_response = pending.host_response;
                         if let Some(host_response) = host_response {
                             let merged = merge_thread_metadata(value, &host_response)?;
@@ -713,6 +781,12 @@ where
                                 .send(Message::Text(serde_json::to_string(&value)?.into()))
                                 .await?;
                         }
+                    } else if take_request_id(&value, &mut pending_thread_list_requests) {
+                        let mut filtered = value;
+                        filter_thread_list_response(&mut filtered, session_scope);
+                        client_write
+                            .send(Message::Text(serde_json::to_string(&filtered)?.into()))
+                            .await?;
                     } else {
                         client_write.send(message).await?;
                     }
@@ -858,6 +932,88 @@ where
                 )
                 .await?;
             }
+        }
+    }
+}
+
+fn remember_request_id(message: &Value, requests: &mut HashSet<String>) {
+    if let Some(id) = request_id_key(message) {
+        requests.insert(id);
+    }
+}
+
+fn take_request_id(message: &Value, requests: &mut HashSet<String>) -> bool {
+    request_id_key(message).is_some_and(|id| requests.remove(&id))
+}
+
+fn request_id_key(message: &Value) -> Option<String> {
+    message
+        .get("id")
+        .and_then(|id| serde_json::to_string(id).ok())
+}
+
+fn record_owned_thread(
+    store: &ProfileStore,
+    profile: &Profile,
+    session_scope: &SessionScopeHandle,
+    response: &Value,
+) {
+    if response.get("error").is_some() {
+        return;
+    }
+    let Some(thread_id) = response
+        .pointer("/result/thread/id")
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    let Ok(mut scope) = session_scope.lock() else {
+        warn!(profile = %profile.name, "session scope lock was poisoned; not recording thread ownership");
+        return;
+    };
+    let Some(scope) = scope.as_mut().filter(|scope| scope.enabled) else {
+        return;
+    };
+    match scope.record_thread(thread_id) {
+        Ok(false) => {}
+        Ok(true) => {
+            if let Err(error) = store.save_session_scope(&profile.name, scope) {
+                warn!(
+                    profile = %profile.name,
+                    thread_id,
+                    error = %error,
+                    "could not persist Shuttle session ownership"
+                );
+            }
+        }
+        Err(error) => warn!(
+            profile = %profile.name,
+            thread_id,
+            error = %error,
+            "App Server returned an unsafe thread id; not recording ownership"
+        ),
+    }
+}
+
+fn filter_thread_list_response(response: &mut Value, session_scope: &SessionScopeHandle) {
+    let Ok(scope) = session_scope.lock() else {
+        warn!("session scope lock was poisoned; not filtering thread list");
+        return;
+    };
+    let Some(scope) = scope.as_ref().filter(|scope| scope.enabled) else {
+        return;
+    };
+    let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for field in ["data", "threads"] {
+        if let Some(threads) = result.get_mut(field).and_then(Value::as_array_mut) {
+            threads.retain(|thread| {
+                thread
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|thread_id| scope.thread_ids.contains(thread_id))
+            });
         }
     }
 }
@@ -1170,6 +1326,8 @@ async fn relay_jsonl<CR, CW, SR, SW>(
     server_read: &mut SR,
     server_write: &mut SW,
     profile: &Profile,
+    store: &ProfileStore,
+    session_scope: &SessionScopeHandle,
 ) -> Result<()>
 where
     CR: AsyncBufRead + Unpin,
@@ -1180,6 +1338,8 @@ where
     let mut registration = EnvironmentRegistration::new(profile);
     let mut pending_client_lines: VecDeque<Vec<u8>> = VecDeque::new();
     let mut pending_client_bytes = 0_usize;
+    let mut pending_thread_start_requests = HashSet::new();
+    let mut pending_thread_list_requests = HashSet::new();
 
     loop {
         tokio::select! {
@@ -1190,10 +1350,14 @@ where
                     profile,
                     registration.initialize_id_mut(),
                 )?;
-                let is_initialize = serde_json::from_slice::<Value>(&rewritten)?
-                    .get("method")
-                    .and_then(Value::as_str)
-                    == Some("initialize");
+                let request: Value = serde_json::from_slice(&rewritten)?;
+                let method = request.get("method").and_then(Value::as_str);
+                let is_initialize = method == Some("initialize");
+                if method == Some("thread/start") {
+                    remember_request_id(&request, &mut pending_thread_start_requests);
+                } else if method == Some("thread/list") {
+                    remember_request_id(&request, &mut pending_thread_list_requests);
+                }
                 if registration.has_initialize_request() && !registration.is_ready() && !is_initialize {
                     pending_client_bytes = pending_client_bytes.saturating_add(rewritten.len());
                     if pending_client_bytes > MAX_PENDING_CLIENT_BYTES {
@@ -1206,7 +1370,7 @@ where
             }
             line = read_bounded_line(server_read, MAX_JSON_LINE_BYTES) => {
                 let Some(line) = line? else { return Ok(()); };
-                let message: Value = serde_json::from_slice(&line)
+                let mut message: Value = serde_json::from_slice(&line)
                     .context("app-server emitted invalid JSONL")?;
                 if registration.is_add_response(&message) {
                     let status_request = registration.begin_status_poll(&message, profile)?;
@@ -1231,7 +1395,13 @@ where
                 }
 
                 let is_initialize_response = registration.is_initialize_response(&message);
-                write_line(client_write, &line).await?;
+                if take_request_id(&message, &mut pending_thread_start_requests) {
+                    record_owned_thread(store, profile, session_scope, &message);
+                }
+                if take_request_id(&message, &mut pending_thread_list_requests) {
+                    filter_thread_list_response(&mut message, session_scope);
+                }
+                write_line(client_write, &serde_json::to_vec(&message)?).await?;
                 if is_initialize_response {
                     let add_environment = registration.begin_registration(&message, profile)?;
                     write_line(server_write, &serde_json::to_vec(&add_environment)?).await?;
@@ -1555,9 +1725,9 @@ impl Drop for SocketGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use cxs_core::{PROFILE_SCHEMA_VERSION, ProfileStatus};
+    use cxs_core::{AppPaths, PROFILE_SCHEMA_VERSION, ProfileStatus};
     use tokio::io::AsyncWriteExt;
 
     use super::*;
@@ -1587,6 +1757,15 @@ mod tests {
         }
     }
 
+    fn store(root: &Path) -> ProfileStore {
+        ProfileStore::new(AppPaths {
+            state_root: root.join("state"),
+            ssh_config: root.join("ssh/config"),
+            managed_ssh_config: root.join("ssh/codex-shuttle.conf"),
+            default_codex_home: root.join("codex"),
+        })
+    }
+
     #[test]
     fn agent_reconnect_delay_backs_off_and_caps() {
         assert_eq!(agent_reconnect_delay(1), Duration::from_millis(250));
@@ -1594,6 +1773,56 @@ mod tests {
         assert_eq!(agent_reconnect_delay(3), Duration::from_secs(1));
         assert_eq!(agent_reconnect_delay(6), Duration::from_secs(5));
         assert_eq!(agent_reconnect_delay(u32::MAX), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn scoped_sidebar_filters_unowned_threads() -> Result<()> {
+        let mut scope = SessionScope::enabled();
+        scope.record_thread("owned")?;
+        let scope = Arc::new(Mutex::new(Some(scope)));
+        let mut response = json!({
+            "id": 7,
+            "result": {
+                "data": [
+                    {"id": "owned", "name": "remote project"},
+                    {"id": "local-only", "name": "local project"}
+                ],
+                "nextCursor": "cursor-is-preserved"
+            }
+        });
+
+        filter_thread_list_response(&mut response, &scope);
+
+        assert_eq!(
+            response["result"]["data"],
+            json!([{"id": "owned", "name": "remote project"}])
+        );
+        assert_eq!(response["result"]["nextCursor"], "cursor-is-preserved");
+        Ok(())
+    }
+
+    #[test]
+    fn records_successful_local_thread_start_in_profile_scope() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = store(directory.path());
+        let profile = store.create_prepared("gpu", "gpu-server", "codex-cli 0.147.0")?;
+        let scope = Arc::new(Mutex::new(store.load_session_scope("gpu")?));
+
+        record_owned_thread(
+            &store,
+            &profile,
+            &scope,
+            &json!({"id": 1, "result": {"thread": {"id": "thread-123"}}}),
+        );
+
+        assert!(
+            store
+                .load_session_scope("gpu")?
+                .context("scope disappeared")?
+                .thread_ids
+                .contains("thread-123")
+        );
+        Ok(())
     }
 
     #[test]
@@ -1750,6 +1979,9 @@ mod tests {
         let mut relay_server_read = BufReader::new(relay_server_read);
         let mut server_read = BufReader::new(server_read);
         let profile = profile();
+        let directory = tempfile::tempdir()?;
+        let relay_store = store(directory.path());
+        let session_scope = Arc::new(Mutex::new(None));
 
         let relay = tokio::spawn(async move {
             relay_jsonl(
@@ -1758,6 +1990,8 @@ mod tests {
                 &mut relay_server_read,
                 &mut relay_server_write,
                 &profile,
+                &relay_store,
+                &session_scope,
             )
             .await
         });
@@ -1874,10 +2108,21 @@ mod tests {
         let (relay_host, mock_host) = tokio::io::duplex(64 * 1024);
         let (mock_host_read, mut mock_host_write) = tokio::io::split(mock_host);
         let mut mock_host_read = BufReader::new(mock_host_read);
-        let profile = profile();
+        let relay_store = store(directory.path());
+        let profile = relay_store.create_prepared("gpu", "gpu-server", "codex-cli 0.147.0")?;
         let relay_profile = profile.clone();
+        let session_scope = Arc::new(Mutex::new(relay_store.load_session_scope("gpu")?));
+        let relay_scope = session_scope.clone();
         let relay = tokio::spawn(async move {
-            relay_websocket(bridge_client, bridge_server, relay_host, &relay_profile).await
+            relay_websocket(
+                bridge_client,
+                bridge_server,
+                relay_host,
+                &relay_profile,
+                &relay_store,
+                &relay_scope,
+            )
+            .await
         });
 
         app.send(Message::Text(
@@ -2062,6 +2307,38 @@ mod tests {
         assert_eq!(
             thread_response["result"]["instructionSources"][0],
             "/home/test/project/AGENTS.md"
+        );
+
+        app.send(Message::Text(
+            r#"{"id":5,"method":"thread/list","params":{"archived":false}}"#.into(),
+        ))
+        .await?;
+        let thread_list = mock_server
+            .next()
+            .await
+            .context("missing local thread/list")??;
+        let thread_list: Value = serde_json::from_str(thread_list.to_text()?)?;
+        assert_eq!(thread_list["method"], "thread/list");
+        mock_server
+            .send(Message::Text(
+                serde_json::to_string(&json!({
+                    "id": 5,
+                    "result": {
+                        "data": [
+                            {"id": "mac-thread", "name": "remote thread"},
+                            {"id": "local-thread", "name": "local-only thread"}
+                        ],
+                        "nextCursor": null
+                    }
+                }))?
+                .into(),
+            ))
+            .await?;
+        let filtered_list = app.next().await.context("missing filtered thread list")??;
+        let filtered_list: Value = serde_json::from_str(filtered_list.to_text()?)?;
+        assert_eq!(
+            filtered_list["result"]["data"],
+            json!([{"id": "mac-thread", "name": "remote thread"}])
         );
 
         app.send(Message::Text(

@@ -51,6 +51,15 @@ The bridge accepts that desktop-local loopback connection, opens an `exec` mux c
 
 The local App Server is the authority for thread and turn persistence. The remote Host App Server uses an isolated `CODEX_HOME`, has plugins and apps disabled, and exists only to provide Codex's maintained host RPC implementations. This gives the App remote paths and remote browsing without moving the session database or credentials off the desktop.
 
+New Shuttle profiles maintain a small, desktop-local ownership index beside
+their profile state. It maps only local thread IDs to the Shuttle profile that
+created them; rollout files and the Codex database remain shared in the normal
+local `CODEX_HOME`. The bridge records a successful local `thread/start` and
+filters that profile's `thread/list` response to its recorded IDs. Archive
+state is never rewritten, so Codex continues to decide which recorded threads
+are active or archived. Profiles created before this index was introduced stay
+unfiltered unless the user enables `cxs session-scope <profile>`.
+
 Pre-existing sessions created directly on a server are imported explicitly by
 `cxs sync`. Shuttle copies rollout files only; it never replaces the desktop's
 SQLite database with a remote database. Codex's local thread scanner indexes
