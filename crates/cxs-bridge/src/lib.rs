@@ -599,7 +599,8 @@ where
 async fn wait_for_socket(path: &Path, child: &mut Child) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if let Ok(metadata) = fs::symlink_metadata(path)
+        // Codex may expose the control socket through a symlink to its protected socket directory.
+        if let Ok(metadata) = fs::metadata(path)
             && metadata.file_type().is_socket()
         {
             return Ok(());
