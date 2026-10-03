@@ -650,7 +650,7 @@ mod tests {
         );
         assert_eq!(store.list()?.len(), 1);
         store.remove("gpu")?;
-        assert!(store.list()?.is_empty());
+        assert_eq!(store.list()?, Vec::<Profile>::new());
         Ok(())
     }
 
