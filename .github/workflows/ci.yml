@@ -16,6 +16,8 @@ jobs:
       remote: ${{ steps.matrix.outputs.remote }}
     steps:
       - uses: actions/checkout@v7
+      - name: Test release preparation
+        run: python3 .github/scripts/test-prepare-release.py
       - id: matrix
         run: bash .github/scripts/platform-matrices.sh
 

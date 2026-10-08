@@ -40,61 +40,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_CODEX_VERSION: ${{ inputs.codex_version }}
-        run: |
-          set -euo pipefail
-          shuttle_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)
-          test -n "$shuttle_version"
-
-          codex_version=${REQUESTED_CODEX_VERSION:-}
-          if test -z "$codex_version" && test "$GITHUB_EVENT_NAME" = push; then
-            case "$GITHUB_REF_NAME" in
-              *-codex.*) codex_version=${GITHUB_REF_NAME##*-codex.} ;;
-              *) codex_version=$(sed -n '/^[0-9][0-9.]*$/p' runtime/codex-versions.txt | tail -n 1) ;;
-            esac
-          fi
-          if test -z "$codex_version"; then
-            baseline=$(sed -n '/^[0-9][0-9.]*$/p' runtime/codex-versions.txt | head -n 1)
-            test -n "$baseline"
-            while read -r candidate; do
-              test "$(printf '%s\n%s\n' "$baseline" "$candidate" | sort -V | head -n 1)" = "$baseline" || continue
-              candidate_tag="v${shuttle_version}-codex.${candidate}"
-              if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${candidate_tag}" >/dev/null 2>&1; then
-                codex_version=$candidate
-                break
-              fi
-            done < <(gh api --paginate repos/openai/codex/git/matching-refs/tags/rust-v \
-              --jq '.[] | .ref | select(test("^refs/tags/rust-v[0-9]+\\.[0-9]+\\.[0-9]+$")) | sub("^refs/tags/rust-v"; "")' |
-              sort -Vu)
-          fi
-          if test -z "$codex_version"; then
-            echo "No unpublished stable Codex release was found."
-            echo "codex-version=" >> "$GITHUB_OUTPUT"
-            echo "release-tag=" >> "$GITHUB_OUTPUT"
-            echo "should-publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          test -n "$codex_version"
-          printf '%s\n' "$codex_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
-          gh api "repos/openai/codex/git/ref/tags/rust-v${codex_version}" >/dev/null
-          assets=$(gh api "repos/openai/codex/releases/tags/rust-v${codex_version}" --jq '.assets[].name')
-          while read -r target; do
-            printf '%s\n' "$assets" | grep -Fqx "codex-package-${target}.tar.gz"
-          done < <(jq -r '.platforms[] | select(.remote) | .rust_target' runtime/platforms.json)
-          printf '%s\n' "$assets" | grep -Fqx codex-package_SHA256SUMS
-
-          if test "$GITHUB_EVENT_NAME" = push; then
-            release_tag=$GITHUB_REF_NAME
-          else
-            release_tag="v${shuttle_version}-codex.${codex_version}"
-          fi
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" >/dev/null 2>&1; then
-            should_publish=false
-          else
-            should_publish=true
-          fi
-          echo "codex-version=$codex_version" >> "$GITHUB_OUTPUT"
-          echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "should-publish=$should_publish" >> "$GITHUB_OUTPUT"
+        run: python3 .github/scripts/prepare-release.py
   quality:
     needs: prepare
     if: needs.prepare.outputs.should-publish == 'true'
