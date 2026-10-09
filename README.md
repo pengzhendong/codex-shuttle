@@ -44,7 +44,7 @@ It uses your existing OpenSSH configuration and one ordinary SSH stdio connectio
 
 Both Apple Silicon and Intel macOS are supported as desktop clients and remote servers.
 
-Shuttle uses the Codex binary bundled with the desktop app; it never resolves `codex` from `PATH`. On macOS this is `/Applications/ChatGPT.app/Contents/Resources/codex`. On Windows, Shuttle selects the newest `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`. Set `CXS_CODEX_PATH` to override discovery. The selected Shuttle release must match that binary's public source baseline. For example, a desktop build reporting `0.147.0-alpha.6.5` uses the Shuttle release for Codex `0.147.0`.
+Shuttle uses the Codex binary bundled with the desktop app; it never resolves `codex` from `PATH`. On macOS it prefers `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`, falling back to the legacy `/Applications/ChatGPT.app/Contents/Resources/codex` layout. On Windows, Shuttle selects the newest `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`. Set `CXS_CODEX_PATH` to override discovery. The selected Shuttle release must match that binary's public source baseline. For example, a desktop build reporting `0.147.0-alpha.6.5` uses the Shuttle release for Codex `0.147.0`.
 
 ## Quick start
 
