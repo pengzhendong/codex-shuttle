@@ -44,7 +44,7 @@ Codex Shuttle（`cxs`）把 Codex 桌面 App 连接到已有的 Linux 或 macOS 
 
 Apple Silicon 和 Intel macOS 均可作为桌面客户端或远程服务器。
 
-Shuttle 始终使用桌面 App 自带的 Codex，不会从 `PATH` 查找 `codex`。macOS 路径为 `/Applications/ChatGPT.app/Contents/Resources/codex`；Windows 会自动选择最新的 `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`。可以用 `CXS_CODEX_PATH` 覆盖自动发现。Shuttle Release 必须匹配这个内置二进制的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
+Shuttle 始终使用桌面 App 自带的 Codex，不会从 `PATH` 查找 `codex`。macOS 优先使用 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`，并兼容旧布局 `/Applications/ChatGPT.app/Contents/Resources/codex`；Windows 会自动选择最新的 `%LOCALAPPDATA%\OpenAI\Codex\bin\**\codex.exe`。可以用 `CXS_CODEX_PATH` 覆盖自动发现。Shuttle Release 必须匹配这个内置二进制的公开源码基线。例如桌面版显示 `0.147.0-alpha.6.5`，应选择 Codex `0.147.0` 对应的 Shuttle Release。
 
 ## 快速开始
 

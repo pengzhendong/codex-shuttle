@@ -4,7 +4,18 @@ set -eu
 
 REPOSITORY="pengzhendong/codex-shuttle"
 INSTALL_DIR=${CXS_INSTALL_DIR:-"$HOME/.local/bin"}
-BUNDLED_CODEX=${CXS_CODEX_PATH:-"/Applications/ChatGPT.app/Contents/Resources/codex"}
+BUNDLED_CODEX=${CXS_CODEX_PATH:-}
+
+find_bundled_codex() {
+  resources=$1
+  for candidate in "$resources/codex-cli/bin/codex" "$resources/codex"; do
+    if test -f "$candidate" && test -x "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  printf '%s\n' "$resources/codex-cli/bin/codex"
+}
 
 usage() {
   cat <<'EOF'
@@ -71,7 +82,10 @@ download() {
   fi
 }
 
-test -x "$BUNDLED_CODEX" ||
+if test -z "$BUNDLED_CODEX"; then
+  BUNDLED_CODEX=$(find_bundled_codex "/Applications/ChatGPT.app/Contents/Resources")
+fi
+test -f "$BUNDLED_CODEX" && test -x "$BUNDLED_CODEX" ||
   fail "ChatGPT Desktop Codex was not found at $BUNDLED_CODEX"
 codex_version=$("$BUNDLED_CODEX" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
 test -n "$codex_version" ||

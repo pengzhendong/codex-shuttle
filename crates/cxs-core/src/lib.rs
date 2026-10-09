@@ -18,7 +18,8 @@ pub mod routing;
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 pub const SESSION_SCOPE_SCHEMA_VERSION: u32 = 1;
 #[cfg(unix)]
-pub const DESKTOP_CODEX_PATH: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
+pub const DESKTOP_CODEX_PATH: &str =
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
 pub const SHIM_PROTOCOL_VERSION: u32 = 1;
 pub const SHIM_MAGIC: &str = "CXS1";
 pub const AGENT_PROTOCOL_VERSION: u32 = 1;
@@ -28,33 +29,54 @@ pub const AGENT_MAGIC: &str = "CXS-AGENT1";
 pub fn desktop_codex_path() -> &'static Path {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
-        if let Some(path) = std::env::var_os("CXS_CODEX_PATH") {
-            return PathBuf::from(path);
-        }
-        #[cfg(windows)]
-        {
-            let root = dirs::data_local_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("OpenAI/Codex/bin");
-            let mut candidates = vec![root.join("codex.exe")];
-            if let Ok(entries) = fs::read_dir(&root) {
-                candidates.extend(
-                    entries
-                        .filter_map(std::result::Result::ok)
-                        .map(|entry| entry.path().join("codex.exe"))
-                        .filter(|path| path.is_file()),
-                );
-            }
-            candidates
-                .into_iter()
-                .filter(|path| path.is_file())
-                .max_by_key(|path| fs::metadata(path).and_then(|value| value.modified()).ok())
-                .unwrap_or_else(|| root.join("codex.exe"))
-        }
-        #[cfg(unix)]
-        PathBuf::from(DESKTOP_CODEX_PATH)
+        resolve_desktop_codex_path(std::env::var_os("CXS_CODEX_PATH").map(PathBuf::from))
     })
     .as_path()
+}
+
+fn resolve_desktop_codex_path(override_path: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = override_path {
+        return path;
+    }
+    #[cfg(windows)]
+    {
+        let root = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("OpenAI/Codex/bin");
+        let mut candidates = vec![root.join("codex.exe")];
+        if let Ok(entries) = fs::read_dir(&root) {
+            candidates.extend(
+                entries
+                    .filter_map(std::result::Result::ok)
+                    .map(|entry| entry.path().join("codex.exe"))
+                    .filter(|path| path.is_file()),
+            );
+        }
+        candidates
+            .into_iter()
+            .filter(|path| path.is_file())
+            .max_by_key(|path| fs::metadata(path).and_then(|value| value.modified()).ok())
+            .unwrap_or_else(|| root.join("codex.exe"))
+    }
+    #[cfg(unix)]
+    bundled_unix_codex_path(Path::new("/Applications/ChatGPT.app/Contents/Resources"))
+}
+
+#[cfg(unix)]
+fn bundled_unix_codex_path(resources: &Path) -> PathBuf {
+    let candidates = [
+        resources.join("codex-cli/bin/codex"),
+        resources.join("codex"),
+    ];
+    candidates
+        .iter()
+        .find(|path| {
+            fs::metadata(path).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -624,16 +646,79 @@ mod tests {
     }
 
     #[test]
-    fn desktop_codex_path_is_the_bundled_app_binary() {
-        #[cfg(unix)]
-        assert_eq!(desktop_codex_path(), Path::new(DESKTOP_CODEX_PATH));
-        #[cfg(windows)]
+    fn desktop_codex_override_remains_authoritative_even_when_missing() {
+        let override_path = PathBuf::from("explicit-missing-codex");
         assert_eq!(
-            desktop_codex_path()
-                .file_name()
-                .and_then(|value| value.to_str()),
-            Some("codex.exe")
+            resolve_desktop_codex_path(Some(override_path.clone())),
+            override_path
         );
+    }
+
+    #[cfg(unix)]
+    fn bundled_codex_fixture(path: &Path, executable: bool) -> Result<()> {
+        fs::create_dir_all(path.parent().context("fixture path has no parent")?)?;
+        fs::write(path, "#!/bin/sh\nexit 0\n")?;
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(if executable { 0o700 } else { 0o600 }),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bundled_codex_prefers_new_layout_when_both_exist() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let new = temporary.path().join("codex-cli/bin/codex");
+        bundled_codex_fixture(&new, true)?;
+        bundled_codex_fixture(&temporary.path().join("codex"), true)?;
+        assert_eq!(bundled_unix_codex_path(temporary.path()), new);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bundled_codex_discovers_new_layout_without_legacy_binary() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let new = temporary.path().join("codex-cli/bin/codex");
+        bundled_codex_fixture(&new, true)?;
+        assert_eq!(bundled_unix_codex_path(temporary.path()), new);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bundled_codex_falls_back_to_executable_legacy_binary() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let legacy = temporary.path().join("codex");
+        bundled_codex_fixture(&legacy, true)?;
+        assert_eq!(bundled_unix_codex_path(temporary.path()), legacy);
+        bundled_codex_fixture(&temporary.path().join("codex-cli/bin/codex"), false)?;
+        assert_eq!(bundled_unix_codex_path(temporary.path()), legacy);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bundled_codex_falls_back_when_new_candidate_is_a_directory() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let expected = temporary.path().join("codex-cli/bin/codex");
+        fs::create_dir_all(&expected)?;
+        let legacy = temporary.path().join("codex");
+        bundled_codex_fixture(&legacy, true)?;
+        assert_eq!(bundled_unix_codex_path(temporary.path()), legacy);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bundled_codex_missing_layout_reports_current_default() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        assert_eq!(
+            bundled_unix_codex_path(temporary.path()),
+            temporary.path().join("codex-cli/bin/codex")
+        );
+        Ok(())
     }
 
     #[test]
@@ -650,7 +735,7 @@ mod tests {
         );
         assert_eq!(store.list()?.len(), 1);
         store.remove("gpu")?;
-        assert!(store.list()?.is_empty());
+        assert_eq!(store.list()?, Vec::<Profile>::new());
         Ok(())
     }
 
