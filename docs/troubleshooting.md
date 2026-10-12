@@ -43,6 +43,21 @@ automatically retries through the desktop when the remote download fails. The
 flag is useful when the server is known to have restricted egress or when you
 want to avoid the first failed attempt.
 
+## A package download appears stuck
+
+Both download paths use a 10-second connection timeout, abort after 30 seconds
+below 1 KiB/s, and limit each transfer attempt to 15 minutes. Desktop downloads
+retry transient network errors (including a truncated body) and transient HTTP
+errors up to three total attempts, resuming existing bytes in the same installer
+workspace. HTTP 403 is not retried. A server that does not support Range requests
+returns an error instead of appending a second full archive.
+
+Desktop progress uses the latest complete successful response headers and the
+full size from `Content-Range` when resuming. Headers, redirect bodies, and curl
+diagnostics are never copied into package bytes. SHA-256 verification remains
+mandatory before uploading or activating the package. Temporary desktop files
+are removed when the installation exits; this is not a cross-invocation cache.
+
 ## A session is missing after changing Provider
 
 Close Codex before changing its local rollout or SQLite state, then run:

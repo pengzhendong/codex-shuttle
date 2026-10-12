@@ -98,6 +98,9 @@ Shuttle 会生成给 App 使用的 SSH 别名 `cxs-devbox`。在 Codex 桌面 Ap
 cxs install devbox --local-download
 ```
 
+桌面端下载中断时，会在同一次安装中自动续传，最多尝试三次。下载设有连接和低速超时，
+完整安装包仍须通过 SHA-256 校验；退出安装后不会保留临时下载目录。
+
 ## 常用命令
 
 | 命令 | 用途 |

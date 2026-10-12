@@ -4,6 +4,12 @@ All notable changes to Codex Shuttle are documented here. The project follows se
 
 ## Unreleased
 
+- Wake the Yamux connection driver before and after stream reads, with regression
+  coverage for pending reads and full or closed wake queues.
+- Resume interrupted desktop downloads within the same installation, separate
+  response headers from package bytes, bound connection and low-speed waits, and
+  report the full package size after a resumed response. Keep SHA-256 verification.
+
 - Scoped new Shuttle host sidebars to the locally persisted threads started
   through that host, while retaining a shared desktop `CODEX_HOME` and native
   archive state. Added `cxs session-scope <profile>` for existing profiles.

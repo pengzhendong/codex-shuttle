@@ -88,7 +88,11 @@ impl AsyncRead for MuxStream {
         context: &mut TaskContext<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(context, buffer)
+        // Reads may queue flow-control work for the separately polled connection.
+        self.wake_driver();
+        let result = Pin::new(&mut self.inner).poll_read(context, buffer);
+        self.wake_driver();
+        result
     }
 }
 
@@ -334,6 +338,70 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn pending_stream(
+        capacity: usize,
+    ) -> Result<(
+        Connection<Compat<tokio::io::DuplexStream>>,
+        MuxStream,
+        mpsc::Receiver<DriverCommand>,
+    )> {
+        let (transport, _peer) = tokio::io::duplex(4096);
+        let mut connection = Connection::new(transport.compat(), Config::default(), Mode::Client);
+        let stream = tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|context| connection.poll_new_outbound(context)),
+        )
+        .await??;
+        let (commands, receiver) = mpsc::channel(capacity);
+        Ok((connection, MuxStream::new(stream, commands), receiver))
+    }
+
+    fn poll_pending_read(stream: &mut MuxStream) {
+        let waker = futures_util::task::noop_waker();
+        let mut context = TaskContext::from_waker(&waker);
+        let mut bytes = [0; 1];
+        let mut buffer = ReadBuf::new(&mut bytes);
+        assert!(
+            Pin::new(stream)
+                .poll_read(&mut context, &mut buffer)
+                .is_pending()
+        );
+        assert!(buffer.filled().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_read_notifies_driver() -> Result<()> {
+        let (_connection, mut stream, mut receiver) = pending_stream(2).await?;
+        poll_pending_read(&mut stream);
+        assert!(
+            matches!(receiver.try_recv(), Ok(DriverCommand::Wake)),
+            "a pending stream read must notify its connection driver"
+        );
+        assert!(matches!(receiver.try_recv(), Ok(DriverCommand::Wake)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_read_with_full_wake_queue_does_not_block() -> Result<()> {
+        let (_connection, mut stream, mut receiver) = pending_stream(1).await?;
+        stream.commands.try_send(DriverCommand::Wake)?;
+        poll_pending_read(&mut stream);
+        assert!(matches!(receiver.try_recv(), Ok(DriverCommand::Wake)));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_read_with_closed_wake_queue_preserves_result() -> Result<()> {
+        let (_connection, mut stream, receiver) = pending_stream(1).await?;
+        drop(receiver);
+        poll_pending_read(&mut stream);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn multiplexes_bidirectional_typed_streams() -> Result<()> {

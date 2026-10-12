@@ -99,6 +99,11 @@ path (for example, before a remote network check):
 cxs install devbox --local-download
 ```
 
+Interrupted desktop downloads retry up to three attempts and resume partial
+packages within the same installation. Downloads have connection and low-speed
+timeouts; the final package must still pass SHA-256 verification. Temporary
+desktop downloads are removed when the installation exits.
+
 ## Common commands
 
 | Command | Purpose |

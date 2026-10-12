@@ -479,7 +479,7 @@ manifest="$destination.SHA256SUMS"
 trap 'unlink "$manifest" 2>/dev/null || true' EXIT HUP INT TERM
 {sha256_function}
 echo '==> Downloading the official Codex package on the remote host' >&2
-curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --silent --show-error --output "$manifest" {manifest_url}
+curl --http1.1 --fail --location --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 900 --speed-limit 1024 --speed-time 30 --silent --show-error --output "$manifest" {manifest_url}
 expected=$(awk -v wanted={package_name} '$2 == wanted || $2 == "*" wanted {{ print $1; exit }}' "$manifest")
 test -n "$expected" || {{ echo "official checksum manifest did not contain the package" >&2; exit 1; }}
 if test -f "$destination"; then
@@ -487,7 +487,7 @@ if test -f "$destination"; then
   if test "$actual" = "$expected"; then printf '%s\n' "$expected"; exit 0; fi
   unlink "$destination"
 fi
-curl --http1.1 --fail --location --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time 60 --progress-bar --continue-at - --output "$temporary" {url} >&2
+curl --http1.1 --fail --location --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 900 --speed-limit 1024 --speed-time 30 --progress-bar --continue-at - --output "$temporary" {url} >&2
 actual=$(sha256_file "$temporary")
 test "$actual" = "$expected" || {{ unlink "$temporary"; echo "official Codex package checksum mismatch" >&2; exit 1; }}
 mv "$temporary" "$destination"
@@ -702,96 +702,149 @@ fn download(url: &str, destination: &Path) -> Result<()> {
 }
 
 fn download_with_progress(url: &str, destination: &Path, label: Option<&str>) -> Result<()> {
-    let mut child = Command::new("curl")
-        .args([
-            "--fail",
-            "--location",
-            "--retry",
-            "3",
-            "--silent",
-            "--show-error",
-            "--include",
-            "--output",
-            "-",
-        ])
-        .arg(url)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| "could not run curl; install curl or provide local artifacts")?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .with_context(|| "could not read curl output")?;
-    let mut output = File::create(destination)
-        .with_context(|| format!("could not create {}", destination.display()))?;
-    let mut pending = Vec::new();
-    let mut chunk = vec![0_u8; 64 * 1024];
-    let mut body_started = false;
-    let mut total = None;
-    let mut transferred = 0_u64;
     let mut last_width = 0_usize;
     if let Some(label) = label {
         eprintln!("==> {label}");
     }
-    loop {
-        let read = stdout
-            .read(&mut chunk)
-            .with_context(|| "could not read curl output")?;
-        if read == 0 {
-            break;
+    let result = download_file_with_progress(url, destination, |bytes, total, complete| {
+        if let Some(label) = label {
+            let (bytes, total) = if !complete && total.is_some_and(|total| bytes >= total) {
+                (99, Some(100))
+            } else {
+                (bytes, total)
+            };
+            print_progress(label, bytes, total, &mut last_width);
         }
-        let mut offset = 0_usize;
-        while offset < read {
-            if !body_started {
-                pending.push(chunk[offset]);
-                offset += 1;
-                if pending.ends_with(b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&pending);
-                    if headers.starts_with("HTTP/") {
-                        total = headers.lines().rev().find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<u64>().ok())
-                                .flatten()
-                        });
-                        pending.clear();
-                        body_started = true;
-                        if let Some(label) = label {
-                            print_progress(label, 0, total, &mut last_width);
-                        }
-                    }
-                }
-                continue;
-            }
-            let remaining = read - offset;
-            output
-                .write_all(&chunk[offset..read])
-                .with_context(|| format!("could not write {}", destination.display()))?;
-            transferred += remaining as u64;
-            offset = read;
-            if let Some(label) = label {
-                print_progress(label, transferred, total, &mut last_width);
-            }
-        }
-    }
-    output
-        .flush()
-        .with_context(|| format!("could not write {}", destination.display()))?;
-    let status = child
-        .wait()
-        .with_context(|| "could not run curl; install curl or provide local artifacts")?;
-    if !status.success() {
-        bail!("download failed: {url}");
-    }
-    if let Some(label) = label {
-        if let Some(total) = total {
-            print_progress(label, total, Some(total), &mut last_width);
-        }
-    }
+    });
     finish_progress(&mut last_width);
-    Ok(())
+    result
 }
+
+fn response_headers(headers: &str) -> Option<&str> {
+    let (complete, _) = headers.rsplit_once("\r\n\r\n")?;
+    complete.rsplit("\r\n\r\n").next()
+}
+
+fn response_status(headers: &str) -> Option<u16> {
+    let line = response_headers(headers)?.lines().next()?;
+    if !line.starts_with("HTTP/") || line.to_ascii_lowercase().contains("connection established") {
+        return None;
+    }
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+fn download_content_length(headers: &str) -> Option<u64> {
+    let status = response_status(headers)?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    let block = response_headers(headers)?;
+    // Content-Length on a resumed response counts only the remaining bytes.
+    let range_total = block.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-range")
+            .then(|| value.split_once('/')?.1.trim().parse().ok())
+            .flatten()
+    });
+    if status == 206 {
+        return range_total;
+    }
+    range_total.or_else(|| {
+        block.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())
+                .flatten()
+        })
+    })
+}
+
+fn download_file_with_progress(
+    url: &str,
+    destination: &Path,
+    mut progress: impl FnMut(u64, Option<u64>, bool),
+) -> Result<()> {
+    for attempt in 0..3 {
+        let (status, http_status, detail) = curl_download_attempt(url, destination, &mut progress)?;
+        if status.success() {
+            return Ok(());
+        }
+        let retry = matches!(status.code(), Some(5 | 6 | 7 | 18 | 28 | 52 | 55 | 56))
+            || (status.code() == Some(22)
+                && matches!(http_status, Some(408 | 429 | 500 | 502 | 503 | 504)));
+        if !retry || attempt == 2 {
+            bail!("download failed: {url}: {status}: {}", detail.trim());
+        }
+        thread::sleep(std::time::Duration::from_secs(1));
+    }
+    unreachable!("each download attempt either succeeds, retries, or returns an error")
+}
+
+fn curl_download_attempt(
+    url: &str,
+    destination: &Path,
+    progress: &mut impl FnMut(u64, Option<u64>, bool),
+) -> Result<(std::process::ExitStatus, Option<u16>, String)> {
+    // curl owns body writes. Headers and errors cannot enter the archive or fill a pipe.
+    let headers = tempfile::NamedTempFile::new()?;
+    let errors = tempfile::NamedTempFile::new()?;
+    let mut command = Command::new("curl");
+    command.args([
+        "--http1.1",
+        "--fail",
+        "--location",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "900",
+        "--speed-limit",
+        "1024",
+        "--speed-time",
+        "30",
+        "--silent",
+        "--show-error",
+    ]);
+    if fs::metadata(destination).is_ok_and(|metadata| metadata.len() > 0) {
+        command.args(["--continue-at", "-"]);
+    }
+    let mut child = command
+        .arg("--dump-header")
+        .arg(headers.path())
+        .arg("--output")
+        .arg(destination)
+        .arg("--url")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(errors.reopen()?)
+        .spawn()
+        .context("could not run curl; install curl or provide local artifacts")?;
+    let status = loop {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("could not wait for curl");
+            }
+        };
+        let text = fs::read_to_string(headers.path()).unwrap_or_default();
+        let total = download_content_length(&text);
+        let bytes = fs::metadata(destination).map_or(0, |metadata| metadata.len());
+        progress(bytes, total, status.is_some_and(|status| status.success()));
+        if let Some(status) = status {
+            break status;
+        }
+        thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let mut detail = String::new();
+    errors.reopen()?.take(8192).read_to_string(&mut detail)?;
+    let text = fs::read_to_string(headers.path()).unwrap_or_default();
+    Ok((status, response_status(&text), detail))
+}
+
+#[cfg(test)]
+mod download_tests;
 
 fn upload(host: &str, source: &Path, remote: &str) -> Result<()> {
     upload_with_progress(host, source, remote, None)
