@@ -36,6 +36,9 @@ impl Fixture {
                         Err(error) => panic!("fixture accept failed: {error}"),
                     }
                 };
+                // BSD sockets can inherit the listener's O_NONBLOCK flag after accept().
+                // Only accepting is polled; reading each request uses blocking I/O.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
@@ -67,7 +70,11 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        self.worker.take().unwrap().join().unwrap();
+        let result = self.worker.take().unwrap().join();
+        // Preserve the original test failure instead of aborting on a second panic.
+        if !thread::panicking() {
+            result.unwrap();
+        }
     }
 }
 
@@ -75,6 +82,35 @@ fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
     let mut bytes = format!("HTTP/1.1 {status}\r\nConnection: close\r\n{headers}\r\n").into_bytes();
     bytes.extend_from_slice(body);
     bytes
+}
+
+#[test]
+fn fixture_waits_for_request_bytes_after_accept() {
+    let fixture = Fixture::start(vec![response(
+        "200 OK",
+        "Content-Length: 7\r\n",
+        b"payload",
+    )]);
+    let address = fixture
+        .url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    // Allow accept() to complete before sending any bytes. The fixture must wait.
+    thread::sleep(Duration::from_millis(100));
+    client
+        .write_all(b"GET /package HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut bytes = Vec::new();
+    client.read_to_end(&mut bytes).unwrap();
+    assert!(bytes.ends_with(b"payload"));
+    assert_eq!(fixture.requests.lock().unwrap().len(), 1);
 }
 
 #[test]
