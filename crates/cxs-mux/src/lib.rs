@@ -367,7 +367,7 @@ mod tests {
                 .poll_read(&mut context, &mut buffer)
                 .is_pending()
         );
-        assert!(buffer.filled().is_empty());
+        assert_eq!(buffer.filled(), []);
     }
 
     #[tokio::test]
