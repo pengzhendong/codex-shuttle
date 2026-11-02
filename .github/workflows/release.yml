@@ -58,7 +58,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: workspace-${{ runner.os }}-${{ runner.arch }}
           add-job-id-key: false
@@ -79,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: release-e2e-${{ runner.os }}-${{ runner.arch }}
           add-job-id-key: false
@@ -110,7 +110,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: mac-cli-${{ matrix.target }}
           add-job-id-key: false
@@ -147,7 +147,7 @@ jobs:
         if: matrix.builder == 'zig'
         with:
           tool: cargo-zigbuild@0.23.0
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: shim-${{ matrix.target }}
           add-job-id-key: false
